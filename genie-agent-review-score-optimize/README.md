@@ -10,11 +10,19 @@ Pick one option. Each installs the skill for one user. Everyone who runs reviews
 
 ### Option 1: ask Genie Code to install it (fastest)
 
+Raw file URL (copy it exactly, with no trailing punctuation):
+
+```
+https://raw.githubusercontent.com/knwldg-hub/ai-skills/main/genie-agent-review-score-optimize/SKILL.md
+```
+
 Open Genie Code in your workspace and paste:
 
-> Install the Genie Code skill from https://raw.githubusercontent.com/knwldg-hub/ai-skills/main/genie-agent-review-score-optimize/SKILL.md. Create the folder /Workspace/Users/<your-email>/.assistant/skills/genie-agent-review-score-optimize/ and save the file content there as SKILL.md. Then confirm the skill is installed.
+> Download the file at the raw URL below and show me a summary of its content so I can review it. After I approve, create the folder `/Workspace/Users/<your-email>/.assistant/skills/genie-agent-review-score-optimize/`, save the content there as `SKILL.md`, and confirm the skill is installed.
+>
+> URL: `https://raw.githubusercontent.com/knwldg-hub/ai-skills/main/genie-agent-review-score-optimize/SKILL.md`
 
-If the workspace can't reach GitHub, use option 2 or 3.
+Note: Genie Code has a safety guardrail against writing externally fetched content into its own `.assistant/skills` folder (prompt-injection protection), so it may ask you to review the content first or refuse the write. If it refuses, use option 2 or 3. Also use option 2 or 3 if the workspace can't reach GitHub.
 
 ### Option 2: manual, in the workspace UI
 
