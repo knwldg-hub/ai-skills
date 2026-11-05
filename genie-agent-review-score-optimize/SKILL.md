@@ -1,11 +1,11 @@
 ---
 name: genie-agent-review-score-optimize
-description: Review, score and optimize an existing Genie Agent (formerly Genie Space). Use when the user asks to review, audit, score, IQ-score, health-check, benchmark, tune, improve the accuracy of, or optimize a Genie Agent or Genie Space. Runs a guided loop - back up config, baseline IQ score plus deep review plus benchmarks, prioritized recommendations, implement approved fixes, then re-score with a before/after comparison.
+description: Review, score and optimize an existing Genie Agent (formerly Genie Space). Use when the user asks to review, audit, score, IQ-score, health-check, benchmark, tune, improve the accuracy of, or optimize a Genie Agent or Genie Space. Runs a guided loop - back up config, check benchmark coverage (and draft new benchmark questions with approval when there are too few), baseline IQ score plus deep review plus benchmarks, prioritized recommendations, implement approved fixes, then re-score with a before/after comparison.
 ---
 
 # Genie Agent Review, Score & Optimize
 
-Version 0.1 (pilot). Built for Activision Global Analytics on Databricks on Google Cloud (us-west4).
+Version 0.2 (pilot). Changes in 0.2: benchmark sufficiency check (Step 3.5), benchmark drafting procedure (Appendix E), low-confidence labeling of benchmark scores, and like-for-like before/after comparison. Built for Activision Global Analytics on Databricks on Google Cloud (us-west4).
 
 You are guiding the user through an end-to-end review of one Genie Agent. Work in a notebook as the current user. Go one step at a time. At every ⏸ checkpoint, stop and wait for the user's answer.
 
@@ -21,7 +21,7 @@ You are guiding the user through an end-to-end review of one Genie Agent. Work i
 
 ## Workflow
 
-Step 0 Setup → 1 Pick agent → 2 Apply mode → 3 Backup → 4 Baseline score → 5 Agent-mode benchmarks (optional, manual) → 6 Recommendations → 7 Draft change → 8 Apply → 9 Re-score → 10 Next or finish
+Step 0 Setup → 1 Pick agent → 2 Apply mode → 3 Backup → 3.5 Benchmark sufficiency check → 4 Baseline score → 5 Agent-mode benchmarks (optional, manual) → 6 Recommendations → 7 Draft change → 8 Apply → 9 Re-score → 10 Next or finish
 
 ### Step 0: Setup
 
@@ -95,6 +95,27 @@ with open(f"{DIR}/backup_{TS}.json", "w") as f:
 
 Tell the user where the backup is saved.
 
+### Step 3.5: Benchmark sufficiency check ⏸
+
+Benchmarks are how every other fix is measured, so check them before scoring. Count the benchmark questions in the config, and how many have an expected SQL answer (only those can be auto-checked in Appendix C).
+
+Classify coverage:
+
+| Benchmarks with expected SQL | Status | What to tell the user |
+|---|---|---|
+| 0 | ❌ None | "There are no benchmarks to run, so accuracy can't be measured and IQ checks 9, 11 and 12 will fail." |
+| 1–9 | ⚠️ Low confidence | "With only n questions, each one moves accuracy by about 100/n points. The accuracy score is indicative only." |
+| 10–14 | ⚠️ Thin | "Enough to score, but edge cases are probably not covered." |
+| 15 or more | ✅ OK | Continue. Still check edge-case coverage (D11) in step 4b. |
+
+If the status is ❌ or ⚠️, ask: *"Do you want me to draft additional benchmark questions now, before the baseline score? (recommended / later / no)"*
+
+- **Recommended (now):** run Appendix E. After the user approves and the benchmarks are added (Mode A or C) or written to the proposed config (Mode B), continue to step 4. The baseline then uses the expanded set. Record the original count and the added count.
+- **Later:** continue to step 4. Label all benchmark results "low confidence (n questions)". The benchmark recommendation will be ranked first in step 6.
+- **No:** continue to step 4 with the same low-confidence label. Still list the benchmark recommendation in step 6 but respect the user's choice.
+
+Record the decision in the scorecard.
+
 ### Step 4: Baseline score
 
 Run all three parts, then show one scorecard.
@@ -128,6 +149,8 @@ w.statement_execution.execute_statement(
 
 Run the procedure in Appendix C. Before starting, tell the user how many questions will run. It takes about 15 seconds per question, and it uses warehouse compute and Genie usage.
 
+If fewer than 10 benchmarks have expected SQL, label the result "low confidence (n questions)" everywhere it appears. If there are none, report "not measurable" instead of 0%.
+
 **Scorecard format**
 
 | Area | Baseline |
@@ -136,6 +159,7 @@ Run the procedure in Appendix C. Before starting, tell the user how many questio
 | Deep review | n ✅ · n ⚠️ · n ❌ |
 | Benchmarks (chat mode) | x% (passed/total) |
 | Benchmarks (agent mode) | x%, or "not run" |
+| Benchmark coverage | n questions (n with expected SQL) · ✅ / ⚠️ / ❌ from step 3.5 |
 
 Below the table, list every failed IQ check and every ❌ or ⚠️ deep-review check, one line each.
 
@@ -169,7 +193,7 @@ Build one recommendation per failed or warned item. Combine related items. Each 
 - **Moves**: which IQ checks, deep-review checks and benchmark questions it should improve
 - **Change type**: agent config, Unity Catalog metadata, or both
 
-Sort by impact, then by lowest effort, then by the best-practice order in Appendix D. Show the top 10 as a table:
+Sort by impact, then by lowest effort, then by the best-practice order in Appendix D. Exception: if benchmark coverage from step 3.5 is ❌ or ⚠️ Low confidence (fewer than 10 with expected SQL), put the benchmark recommendation first and set its impact to High, because other fixes can't be measured reliably without it. Show the top 10 as a table:
 
 | ID | Recommendation | Impact | Effort | Moves | Type |
 |---|---|---|---|---|---|
@@ -183,6 +207,7 @@ For the chosen recommendation:
 - **Agent config changes**: build the updated config in memory. Show a before/after diff of only the affected section.
 - **Unity Catalog changes**: write the SQL, for example `COMMENT ON TABLE ...` and `ALTER TABLE ... ALTER COLUMN ... COMMENT '...'`. Descriptions must explain meaning, units and valid ranges in words. They must not contain real data values.
 - **New or changed SQL** (example SQL, SQL expressions, functions): validate with `EXPLAIN` before showing it.
+- **New benchmark questions**: follow Appendix E.
 
 Ask: *"Apply this change? (yes / edit / skip)"*
 
@@ -211,6 +236,8 @@ Say: *"Commit these to your repo and deploy through your normal process. Tell me
 
 Re-fetch the config and rerun step 4 (IQ score, deep review, chat-mode benchmarks). Ask whether they want to rerun Agent-mode benchmarks using the step 5 instructions.
 
+Compare benchmarks like for like. If benchmarks were added after the baseline, report two numbers: accuracy on the original baseline question set (the true before/after), and accuracy on the full expanded set (the new baseline for future work). Never present a change in accuracy that is only caused by adding or removing questions as an improvement.
+
 Show a before/after table:
 
 | Area | Before | After | Change |
@@ -220,6 +247,7 @@ Show a before/after table:
 | Deep review (✅ / ⚠️ / ❌) | | | |
 | Benchmarks, chat mode | | | |
 | Benchmarks, agent mode | | | |
+| Benchmark coverage (count) | | | |
 
 Then list each check that changed status. If a benchmark question went from pass to fail, flag it clearly and offer to roll back that change.
 
@@ -323,9 +351,64 @@ The order follows the Databricks best practices: metadata first, text instructio
 | 3 | SQL expressions (measures, filters, dimensions), join specs, metric views | High | Medium |
 | 4 | Fix or add example SQL and trusted SQL functions | High | Low–Medium |
 | 5 | Shorten text instructions (keep only behavior, scope and tone) | Medium | Medium |
-| 6 | Expand benchmarks to 15–20, including edge cases | Medium | Medium |
+| 6 | Expand benchmarks to 15–20, including edge cases (Appendix E). Move to first and set impact to High when fewer than 10 have expected SQL | Medium | Medium |
 | 7 | Description, sample questions, redirects to other agents | Medium | Low |
 | 8 | Remove [STAGE] from the name and certify | Low (routing boost) | Low |
+
+## Appendix E: Drafting benchmark questions
+
+Goal: a benchmark set of 15–20 questions that reflects how real users ask, and covers the edge cases the agent is supposed to handle.
+
+**1. Gather sources (config and metadata only, never data values)**
+
+- Sample questions in the agent description and the agent's suggested questions
+- Rules and edge cases stated in the text instructions (default date windows, exclusions, definitions, title or name mappings)
+- Join specs, SQL expressions (measures, filters, dimensions) and trusted SQL functions
+- Table and column descriptions in Unity Catalog and in the config
+- Failing questions from chat-mode or Agent-mode runs, if any
+- Real user questions from the Monitoring tab. Ask the user first: *"May I use recent questions from the Monitoring tab as benchmark candidates? I'll only use the question text."* If the user declines or the API isn't available, ask them to paste a few questions instead.
+
+**2. Draft candidates**
+
+Draft enough candidates to reach 15–20 in total (existing plus new). Aim for this mix:
+
+| Category | Share | Example of what it tests |
+|---|---|---|
+| Core questions | about 40% | The main metrics and breakdowns the agent is for |
+| Edge cases | about 25% | Default date windows, exclusions, NULL handling, distinct counts, rates computed from sums |
+| Phrasing variants | about 15% | Synonyms, abbreviations and business terms for the same metric |
+| Multi-table | about 10% | Questions that need a join spec or metric view |
+| Out of scope | about 10% | Questions the agent should decline or redirect (no expected SQL; check manually in the UI) |
+
+For each candidate write: the question as a user would ask it, the category, the source it came from, and the expected SQL.
+
+**3. Avoid overfitting**
+
+- Don't copy an existing example SQL question word for word. Rephrase it, or change a filter or grain, so the benchmark tests generalization.
+- Don't duplicate an existing benchmark.
+- Don't put hard-coded dates or literal data values in the question or SQL; use relative windows that match the instructions.
+
+**4. Validate the expected SQL without showing data**
+
+- Run `EXPLAIN` on each expected SQL. Drop or fix any that fail.
+- Optionally run it once and record only the row count and column count. Flag queries that return 0 rows (probably a wrong filter) or more than 5,000 rows (too broad for a reliable comparison).
+- Check the SQL against D4 (window partitions, sums vs averages, DISTINCT on user counts, date windows).
+
+**5. Get approval** ⏸
+
+Show the candidates as a table (no data values):
+
+| # | Question | Category | Source | SQL valid | Rows |
+|---|---|---|---|---|---|
+
+Ask: *"Which of these should I add? You can say 'all', list numbers (for example 1–8, 11), or ask me to edit any of them."* Let the user edit wording and expected SQL. Only approved questions are added.
+
+**6. Add them**
+
+- **Mode A or C:** add the approved questions to the benchmarks section of the config, following golden rules 2 and 7 (backup exists, new 32-character hex IDs, copy the structure of existing benchmark entries; if there are none, use the built-in genie-space-authoring knowledge for the schema). Apply with `update_space`, then re-fetch and confirm that the benchmark count went up by exactly the approved number and nothing else changed.
+- **Mode B:** add them to `{DIR}/proposed/serialized_space_{TS}.json` and list them in `CHANGES_{TS}.md`.
+
+Tell the user how many were added and the new total. Suggest they review the out-of-scope questions in the UI Benchmarks tab, since those can't be auto-checked.
 
 ## References (GCP)
 

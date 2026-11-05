@@ -1,4 +1,4 @@
-# genie-agent-review-score-optimize (Genie Code skill, v0.1 pilot)
+# genie-agent-review-score-optimize (Genie Code skill, v0.2 pilot)
 
 A Genie Code skill that reviews, scores and optimizes an existing Genie Agent (formerly Genie Space). The skill file is [`SKILL.md`](./SKILL.md).
 
@@ -58,6 +58,7 @@ Other useful prompts during a session:
 | See the current scorecard | "Show my scorecard" |
 | Score again after a deploy | "It's deployed, re-score" |
 | Undo changes | "Restore the backup" |
+| Add more benchmark questions | "Draft more benchmarks" |
 | Finish and get the report | "Finish the review" |
 
 ## Prerequisites
