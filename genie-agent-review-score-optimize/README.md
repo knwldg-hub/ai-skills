@@ -1,4 +1,4 @@
-# genie-agent-review-score-optimize (Genie Code skill, v0.3 pilot)
+# genie-agent-review-score-optimize (Genie Code skill, v0.4 pilot)
 
 A Genie Code skill that reviews, scores and optimizes an existing Genie Agent (formerly Genie Space). The skill file is [`SKILL.md`](./SKILL.md).
 
@@ -40,7 +40,7 @@ databricks workspace import \
 
 Replace `YOUR_EMAIL` with your workspace user name.
 
-Check that it's installed: ask Genie Code "Is the genie-agent-review-score-optimize skill installed, and which version?" It should say Version 0.3.
+Check that it's installed: ask Genie Code "Is the genie-agent-review-score-optimize skill installed, and which version?" It should say Version 0.4.
 
 ## Run a review
 
@@ -71,6 +71,12 @@ Other useful prompts during a session:
 ## Testing tip
 
 For the first runs, pick **Mode C (test on a copy)** at step 2. The skill clones the agent and makes all changes on the copy, so the original stays untouched. Benchmark runs show up in the copy's Benchmarks tab history, and the skill offers to trash the copy at the end.
+
+## What's new in v0.4
+
+- Quick scan first: a read-only scan in seconds (no warehouse compute) showing what looks good, what could be better and what's missing
+- Benchmarks are offered after the quick scan, not run automatically; you can stop with a quick-scan report (works with CAN VIEW)
+- Benchmark runs show live progress
 
 ## What's new in v0.3
 

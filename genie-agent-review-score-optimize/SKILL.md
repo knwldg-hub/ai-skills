@@ -5,9 +5,11 @@ description: Review, score and optimize an existing Genie Agent (formerly Genie 
 
 # Genie Agent Review, Score & Optimize
 
-Version 0.3 (pilot). Built for Activision Global Analytics on Databricks on Google Cloud (us-west4).
+Version 0.4 (pilot). Built for Activision Global Analytics on Databricks on Google Cloud (us-west4).
 
 You are guiding the user through an end-to-end review of one Genie Agent. Work in a notebook as the current user. Go one step at a time. At every ⏸ checkpoint, stop and wait for the user's answer.
+
+Changes in 0.4: a read-only quick scan (Step 1.5) runs before anything else and shows what looks good, what could be better and what's missing, in seconds and without warehouse compute. Benchmarks are offered after it, not run automatically. The user can stop after the quick scan with a short report.
 
 Changes in 0.3: no package dependency (IQ scoring is built in, ported from the Genie Workbench IQ Scan); native Genie benchmark runs through the API (same engine as the Benchmarks tab) with a chat-mode fallback; tested helper library (Appendix H) and config field map (Appendix G); stability re-runs for failing questions; one change at a time with targeted re-runs; failure reason to fix mapping (Appendix F); rules against tuning to the benchmark; stricter deep-review criteria; manual checks listed separately.
 
@@ -29,7 +31,7 @@ Changes in 0.2: benchmark sufficiency check (Step 3.5), benchmark drafting (Appe
 
 ## Workflow
 
-Step 0 Setup → 1 Pick agent → 2 Apply mode → 3 Backup → 3.5 Benchmark sufficiency check → 4 Baseline score → 5 Other benchmark runs → 6 Recommendations → 7 Draft one change → 8 Apply and targeted re-run → (repeat 7–8) → 9 Full re-score → 10 Next or finish
+Step 0 Setup → 1 Pick agent → 1.5 Quick scan (read-only; can stop here) → 2 Apply mode → 3 Backup → 3.5 Benchmark sufficiency check → 4 Baseline score → 5 Other benchmark runs → 6 Recommendations → 7 Draft one change → 8 Apply and targeted re-run → (repeat 7–8) → 9 Full re-score → 10 Next or finish
 
 ### Step 0: Setup
 
@@ -52,9 +54,45 @@ uc = uc_info(cfg)          # Unity Catalog metadata only: type, comment coverage
 summary = summarize(cfg, uc)
 ```
 
-Show the title, description length, warehouse ID and the `summary` counts. `summarize` detects metric views from Unity Catalog (`table_type = METRIC_VIEW`), because metric views can appear under `data_sources.tables` in the config. Don't call a metric view a table.
+Show only the title, agent ID and warehouse ID, and ask: *"Is this the right agent?"* The details come in the quick scan. `summarize` detects metric views from Unity Catalog (`table_type = METRIC_VIEW`), because metric views can appear under `data_sources.tables` in the config. Don't call a metric view a table.
 
-Ask: *"Is this the right agent?"*
+### Step 1.5: Quick scan ⏸
+
+Read-only and fast: config and Unity Catalog metadata only. No warehouse compute, no benchmark runs, no changes. Tell the user that before running it.
+
+```python
+qs = quick_scan(space, cfg, uc)
+```
+
+Then do the deep-review checks that only need the config (D1, D2, D5, D8, D9, D10, D12, D13) and add their results to the same groups. Leave D3, D4, D6, D7 and D11 for the full score.
+
+Show the result in this shape, in plain language, with the evidence count on each line and no data values:
+
+**Quick scan: <title>** · config checks x/10 passed · provisional tier <tier>
+
+| What it has | |
+|---|---|
+| Data sources | n tables · n metric views |
+| Instructions | n characters · n example SQLs · n SQL snippets · n join specs |
+| Columns | n configured · n with synonyms · n with entity matching |
+| Benchmarks | n questions (n with expected SQL) |
+| Last full benchmark run | x% on <date> (n questions), or "none yet" |
+
+- ✅ **Looks good**: passed checks, for example "All 15 configured columns are described"
+- ⚠️ **Configured, could be better**: passed with a warning, for example "Instructions are 3,795 characters; about 2,000 is recommended"
+- ❌ **Missing**: failed checks, for example "No SQL snippets (measures, filters, expressions)"
+- ➖ **Not applicable**: for example join specs on a single-source agent
+- ❓ **Not measured yet**: accuracy (IQ 11–12), example SQL validity (D3), SQL logic (D4, D6)
+
+Then give up to 3 likely quick wins in one line each (no changes yet), and ask:
+
+*"Next step? (a) run benchmarks for a full score: n questions, about a few minutes, uses warehouse compute and shows in the Benchmarks tab history; (b) see recommendations from the config alone; (c) stop here and save this quick-scan report."*
+
+- **(a)**: continue to step 2. Recommend running on a copy (Mode C) if the user doesn't own the agent.
+- **(b)**: go to step 6 using the quick-scan evidence only. Label it "config-only, accuracy not measured". Before the first change, do steps 2 and 3 (apply mode and backup) and offer a baseline benchmark run, so the change can be measured.
+- **(c)**: save `{REVIEW_ROOT}/{SPACE_ID}/quick_scan_{date}.md` and finish. This works with CAN VIEW only.
+
+If `last_full_run` exists, say it's an earlier run, give its date, and use it only as context. Golden rule 9 still applies: the full score uses a run from this session.
 
 ### Step 2: Choose how changes are applied ⏸
 
@@ -117,7 +155,7 @@ Record the decision in the scorecard.
 
 ### Step 4: Baseline score
 
-Run all three parts, then show one scorecard. Run benchmarks first (4a), because the IQ score needs the accuracy.
+Run all three parts, then show one scorecard. Run benchmarks first (4a), because the IQ score needs the accuracy. Reuse the quick-scan results; only add what it couldn't measure.
 
 **4a. Benchmarks (Appendix C)**
 
@@ -628,6 +666,31 @@ def iq_score(cfg, uc=None, best_accuracy=None):
     tier = "Trusted" if all(c["passed"] for c in checks) else ("Ready to Optimize" if all(c["passed"] for c in checks[:10]) else "Not Ready")
     return {"score": sum(c["passed"] for c in checks), "total": 12, "tier": tier, "checks": checks}
 
+def quick_scan(sp, cfg, uc=None):
+    """Read-only quick scan: IQ config checks 1-10 grouped as good / improve / missing / na, plus the latest full benchmark run. No warehouse compute."""
+    uc = uc if uc is not None else uc_info(cfg)
+    s = summarize(cfg, uc)
+    iq = iq_score(cfg, uc, best_accuracy=None)
+    n_src = s["tables"] + s["metric_views"]
+    groups = {"good": [], "improve": [], "missing": [], "na": []}
+    for c in iq["checks"][:10]:
+        if c["n"] == 5 and not c["passed"] and n_src == 1:
+            groups["na"].append(c)
+        elif not c["passed"]:
+            groups["missing"].append(c)
+        elif c["severity"] == "warning":
+            groups["improve"].append(c)
+        else:
+            groups["good"].append(c)
+    last = None
+    try:
+        full = [r for r in recent_runs(sp.space_id, 20) if r["status"] == "DONE" and r["num_questions"] == s["benchmarks"]]
+        last = full[0] if full else None
+    except Exception:
+        pass
+    return {"title": sp.title, "description_chars": len(sp.description or ""), "summary": s, "groups": groups,
+            "config_checks_passed": sum(c["passed"] for c in iq["checks"][:10]), "last_full_run": last}
+
 # ---------- SQL ----------
 def run_sql(warehouse_id, sql):
     """Run SQL on the agent's warehouse; return (columns, rows). Rows stay in memory only."""
@@ -675,7 +738,8 @@ def run_benchmarks(space_id, question_ids=None, poll_s=15, timeout_s=1800):
     rid = w.genie.genie_create_eval_run(space_id, benchmark_question_ids=question_ids).eval_run_id
     t0 = time.time()
     while True:
-        st = _val(w.genie.genie_get_eval_run(space_id, rid).eval_run_status)
+        r = w.genie.genie_get_eval_run(space_id, rid); st = _val(r.eval_run_status)
+        print(f"  benchmark run {st}: {r.num_done or 0}/{r.num_questions or '?'} done, {time.time() - t0:.0f}s")
         if st in ("DONE", "FAILED", "CANCELLED") or time.time() - t0 > timeout_s:
             break
         time.sleep(poll_s)
