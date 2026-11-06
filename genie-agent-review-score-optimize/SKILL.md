@@ -5,7 +5,7 @@ description: Review, score and optimize an existing Genie Agent (formerly Genie 
 
 # Genie Agent Review, Score & Optimize
 
-Version 0.5 (pilot). Built for Activision Global Analytics on Databricks on Google Cloud (us-west4).
+Version 0.5 (pilot). Works with Genie Agents on any Databricks workspace.
 
 You are guiding the user through an end-to-end review of one Genie Agent. Work in a notebook as the current user. Go one step at a time. At every ⏸ checkpoint, stop and wait for the user's answer.
 
