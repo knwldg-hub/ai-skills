@@ -1,4 +1,4 @@
-# genie-agent-review-score-optimize (Genie Code skill, v0.4 pilot)
+# genie-agent-review-score-optimize (Genie Code skill, v0.5 pilot)
 
 A Genie Code skill that reviews, scores and optimizes an existing Genie Agent (formerly Genie Space). The skill file is [`SKILL.md`](./SKILL.md).
 
@@ -40,7 +40,7 @@ databricks workspace import \
 
 Replace `YOUR_EMAIL` with your workspace user name.
 
-Check that it's installed: ask Genie Code "Is the genie-agent-review-score-optimize skill installed, and which version?" It should say Version 0.4.
+Check that it's installed: ask Genie Code "Is the genie-agent-review-score-optimize skill installed, and which version?" It should say Version 0.5.
 
 ## Run a review
 
@@ -71,6 +71,21 @@ Other useful prompts during a session:
 ## Testing tip
 
 For the first runs, pick **Mode C (test on a copy)** at step 2. The skill clones the agent and makes all changes on the copy, so the original stays untouched. Benchmark runs show up in the copy's Benchmarks tab history, and the skill offers to trash the copy at the end.
+
+## What's new in v0.5
+
+Adopts the useful parts of the field-kit skills `automated_iq_scorer` and `benchmark_eval_harness`. The headline score stays the Genie Workbench IQ score, so it matches what customers see in Workbench.
+
+- Benchmark quality in the quick scan: expected SQL using `CURRENT_DATE()` (results drift daily) and question-type coverage (time, ranking, ratio, period comparison, segmentation, trailing window)
+- Optional guardrail tests: 5 risky prompts (personal data, delete, prompt injection, out of scope, ambiguous); pass = no SQL generated
+- Critical questions: a change that makes one fail is blocked
+- Regression rules: alert on a drop of 5+ points or 3+ regressed questions; flaky questions ignored
+- Readiness checklist: accuracy ≥ 85%, critical questions pass, guardrails pass
+- Optional MLflow history of scores (no data)
+- Field-kit checks (metric views, hidden columns, stricter description thresholds) shown as advice only
+- Benchmark drafting with 2–4 phrasings per concept and dates anchored on the latest loaded date
+
+Not adopted: the composite trust score (inputs undefined) and rules that fail valid agents (mandatory metric view, 5+ hidden columns, "GRAIN" in every comment, `GROUP BY ALL`).
 
 ## What's new in v0.4
 
