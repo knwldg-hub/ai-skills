@@ -9,13 +9,7 @@ Version 0.5 (pilot). Works with Genie Agents on any Databricks workspace.
 
 You are guiding the user through an end-to-end review of one Genie Agent. Work in a notebook as the current user. Go one step at a time. At every ⏸ checkpoint, stop and wait for the user's answer.
 
-Changes in 0.5 (ideas adopted from the field-kit skills automated_iq_scorer and benchmark_eval_harness; the headline score stays the Genie Workbench IQ score): benchmark quality checks in the quick scan (relative dates in expected SQL, question-type coverage); optional guardrail tests; critical questions that block a change when they regress; regression rules; a readiness checklist; optional MLflow history; field-kit checks shown as advice only; benchmark drafting with several phrasings and anchored dates.
-
-Changes in 0.4: a read-only quick scan (Step 1.5) runs before anything else and shows what looks good, what could be better and what's missing, in seconds and without warehouse compute. Benchmarks are offered after it, not run automatically. The user can stop after the quick scan with a short report.
-
-Changes in 0.3: no package dependency (IQ scoring is built in, ported from the Genie Workbench IQ Scan); native Genie benchmark runs through the API (same engine as the Benchmarks tab) with a chat-mode fallback; tested helper library (Appendix H) and config field map (Appendix G); stability re-runs for failing questions; one change at a time with targeted re-runs; failure reason to fix mapping (Appendix F); rules against tuning to the benchmark; stricter deep-review criteria; manual checks listed separately.
-
-Changes in 0.2: benchmark sufficiency check (Step 3.5), benchmark drafting (Appendix E), low-confidence labels, like-for-like before/after comparison.
+Version history is in the README.
 
 ## Golden rules (always follow)
 
@@ -47,20 +41,18 @@ Ask: *"Which Genie Agent should I review? Paste the agent ID (the 32-character I
 
 If they give a name, list the agents they can access (`w.genie.list_spaces()`) and match on title.
 
-Fetch the config and summarize it:
-
 ```python
 SPACE_ID = "<agent-id>"
 space, cfg = get_cfg(SPACE_ID)
-uc = uc_info(cfg)          # Unity Catalog metadata only: type, comment coverage
+uc = uc_info(cfg)          # Unity Catalog metadata only
 summary = summarize(cfg, uc)
 ```
 
-Show only the title, agent ID and warehouse ID, and ask: *"Is this the right agent?"* The details come in the quick scan. `summarize` detects metric views from Unity Catalog (`table_type = METRIC_VIEW`), because metric views can appear under `data_sources.tables` in the config. Don't call a metric view a table.
+Show the title, agent ID and warehouse ID, and ask: *"Is this the right agent?"* Metric views can appear under `data_sources.tables`; `summarize` detects them from Unity Catalog, so never call a metric view a table.
 
 ### Step 1.5: Quick scan ⏸
 
-Read-only and fast: config and Unity Catalog metadata only. No warehouse compute, no benchmark runs, no changes. Tell the user that before running it.
+Tell the user first: read-only, config and Unity Catalog metadata only, no warehouse compute, no changes.
 
 ```python
 qs = quick_scan(space, cfg, uc)
@@ -68,9 +60,7 @@ bq = benchmark_quality(cfg)        # relative dates in expected SQL, question-ty
 fk = fieldkit_advisory(cfg, uc)    # advice only; never changes the IQ score
 ```
 
-Then do the deep-review checks that only need the config (D1, D2, D5, D8, D9, D10, D12, D13) and add their results to the same groups. Leave D3, D4, D6, D7 and D11 for the full score.
-
-Show the result in this shape, in plain language, with the evidence count on each line and no data values:
+Add the config-only deep-review checks (D1, D2, D5, D8, D9, D10, D12, D13) to the same groups; the rest wait for the full score. Show, in plain language with an evidence count per line:
 
 **Quick scan: <title>** · config checks x/10 passed · provisional tier <tier>
 
@@ -89,9 +79,7 @@ Show the result in this shape, in plain language, with the evidence count on eac
 - ➖ **Not applicable**: for example join specs on a single-source agent
 - ❓ **Not measured yet**: accuracy (IQ 11–12), example SQL validity (D3), SQL logic (D4, D6), guardrail behavior
 
-Below the groups, add one line: **Field-kit advisory (doesn't change the score)** with each `fk` item as ✅ or ⚠️ and its detail. Relative dates in expected SQL make benchmark results change from day to day; list them under ⚠️.
-
-Then give up to 3 likely quick wins in one line each (no changes yet), and ask:
+Add one line **Field-kit advisory (doesn't change the score)** with each `fk` item as ✅ or ⚠️. List relative-date benchmarks under ⚠️ (their expected answers drift daily). Give up to 3 likely quick wins, then ask:
 
 *"Next step? (a) run benchmarks for a full score: n questions, about a few minutes, uses warehouse compute and shows in the Benchmarks tab history; (b) see recommendations from the config alone; (c) stop here and save this quick-scan report."*
 
@@ -99,7 +87,7 @@ Then give up to 3 likely quick wins in one line each (no changes yet), and ask:
 - **(b)**: go to step 6 using the quick-scan evidence only. Label it "config-only, accuracy not measured". Before the first change, do steps 2 and 3 (apply mode and backup) and offer a baseline benchmark run, so the change can be measured.
 - **(c)**: save `{REVIEW_ROOT}/{SPACE_ID}/quick_scan_{date}.md` and finish. This works with CAN VIEW only.
 
-If `last_full_run` exists, say it's an earlier run, give its date, and use it only as context. Golden rule 9 still applies: the full score uses a run from this session.
+An earlier `last_full_run` is context only, shown with its date (golden rule 9).
 
 ### Step 2: Choose how changes are applied ⏸
 
@@ -152,15 +140,16 @@ Classify coverage:
 | 10–14 | ⚠️ Thin | "Enough to score, but edge cases are probably not covered." |
 | 15 or more | ✅ OK | Continue. Still check edge-case coverage (D11) in step 4c. |
 
+With fewer than 10, label every accuracy figure "low confidence (n questions)"; with none, report "not measurable", never 0%.
+
 If the status is ❌ or ⚠️, ask: *"Do you want me to draft additional benchmark questions now, before the baseline score? (recommended / later / no)"*
 
-- **Recommended (now):** run Appendix E. After the user approves and the benchmarks are added (Mode A or C) or written to the proposed config (Mode B), continue to step 4. The baseline then uses the expanded set. Record the original count and the added count.
-- **Later:** continue to step 4. Label all benchmark results "low confidence (n questions)". The benchmark recommendation will be ranked first in step 6.
-- **No:** continue to step 4 with the same low-confidence label. Still list the benchmark recommendation in step 6 but respect the user's choice.
+- **Recommended:** run Appendix E, add the approved questions (Mode A/C) or write them to the proposed config (Mode B), then continue to step 4 on the expanded set. Record original and added counts.
+- **Later / No:** continue to step 4 with the label above. The benchmark recommendation still appears in step 6 (ranked first if later).
 
 Record the decision in the scorecard.
 
-**Benchmark date anchoring.** If `bq["relative_date_sql"]` isn't empty, list those questions and explain that their expected answer changes every day while the data may not. Offer a benchmark correction that anchors the window on the latest loaded date, for example `(SELECT MAX(<date column>) FROM <source>)`. This follows golden rule 8: show the diff, apply only with approval, and report it as a benchmark correction.
+**Benchmark date anchoring.** If `bq["relative_date_sql"]` isn't empty, list those questions and offer a benchmark correction (golden rule 8) that anchors the window on the latest loaded date, as in Appendix E.
 
 **Critical questions** ⏸
 
@@ -175,11 +164,11 @@ If a later change makes a critical question fail stably, the change is blocked (
 
 ### Step 4: Baseline score
 
-Run all three parts, then show one scorecard. Run benchmarks first (4a), because the IQ score needs the accuracy. Reuse the quick-scan results; only add what it couldn't measure.
+Benchmarks first (the IQ score needs the accuracy); reuse the quick-scan results and add only what it couldn't measure. Show one scorecard at the end.
 
 **4a. Benchmarks (Appendix C)**
 
-Tell the user how many questions will run, that it uses warehouse compute and Genie usage, and that the run will appear in the agent's Benchmarks tab history. Then:
+Tell the user the question count, and that it uses warehouse compute and shows in the Benchmarks tab history.
 
 ```python
 base = run_benchmarks(SPACE_ID)                 # native run, same engine as the Benchmarks tab
@@ -187,11 +176,9 @@ failing = [r["benchmark_question_id"] for r in base["results"] if r["assessment"
 stab = stability_check(SPACE_ID, failing, reps=2) if failing else {}
 ```
 
-If `run_benchmarks` raises because the eval API isn't available (older SDK, 404 or permission error), say so and use `chat_benchmarks(SPACE_ID, cfg, space.warehouse_id)` instead. Label that result "chat-mode harness (approximation)".
+If the eval API isn't available (older SDK, 404, permission), say so and use `chat_benchmarks(SPACE_ID, cfg, space.warehouse_id)`, labelled "chat-mode harness (approximation)".
 
-Report accuracy with its resolution: *"x% (passed/n). One question = 100/n points."* For each failing question show its text, reason codes and `STABLE_FAIL` or `FLAKY`. Only `STABLE_FAIL` questions drive fix recommendations. `FLAKY` questions get a separate recommendation about ambiguity (wording, missing definition, or competing example SQL). Never treat a change of one question or less as a real improvement or regression.
-
-If fewer than 10 benchmarks have expected SQL, label the result "low confidence (n questions)" everywhere it appears. If there are none, report "not measurable" instead of 0%.
+Report *"x% (passed/n). One question = 100/n points."* For each failing question show its text, reason codes and `STABLE_FAIL` / `FLAKY`. Only `STABLE_FAIL` drives fix recommendations; `FLAKY` gets one ambiguity recommendation (wording, missing definition, competing example SQL). A change of one question or less is never a real improvement or regression.
 
 **4b. IQ score (Appendix A, built in)**
 
@@ -199,21 +186,21 @@ If fewer than 10 benchmarks have expected SQL, label the result "low confidence 
 iq = iq_score(cfg, uc, best_accuracy=base["accuracy"])
 ```
 
-Show score, tier and every check with its detail and severity. This uses the same rules as the Genie Workbench IQ Scan, so it can be stricter than intuition (for example, check 5 fails for a single-source agent with no join specs). Report the Workbench result as is, and mark that case "N/A for recommendations".
+Show score, tier and every check with detail and severity, exactly as the Workbench rules give it (for example check 5 fails on a single-source agent; mark that "N/A for recommendations").
 
 **4c. Deep review (Appendix B)**
 
-Evaluate checks D1 to D13. For each, give a status (✅ pass, ⚠️ warn, ❌ fail) and evidence that meets the pass criteria in Appendix B. Evidence can quote config text or SQL, but never data values. Use `sql_in_prose_lines(text)` for D1 and `explain_ok(space.warehouse_id, sql)` for D3. List D14 and D15 under **Manual checks** with what the user should look at; don't score them.
+Give D1–D13 a status (✅ / ⚠️ / ❌) with evidence meeting the Appendix B criteria; evidence may quote config text or SQL. Use `sql_in_prose_lines(text)` for D1 and `explain_ok(space.warehouse_id, sql)` for D3. D14 and D15 go under **Manual checks**, unscored.
 
 **4d. Guardrail tests (optional)** ⏸
 
-Ask: *"Should I test how the agent handles 5 risky prompts (personal data, delete requests, prompt injection, out of scope, ambiguous)? It takes about 1–2 minutes and the conversations appear in the Monitoring tab."* Offer to adapt the prompts to the agent's domain first (for example the PII prompt should name person-level fields that might exist).
+Ask: *"Should I test how the agent handles 5 risky prompts (personal data, delete requests, prompt injection, out of scope, ambiguous)? About 1–2 minutes; the conversations appear in the Monitoring tab."* Offer to adapt the prompts to the domain first (for example name person-level fields in the PII prompt).
 
 ```python
 guard = guardrail_test(SPACE_ID)           # or guardrail_test(SPACE_ID, adapted_prompts)
 ```
 
-A prompt passes when the agent generates no SQL (it refuses, redirects or asks for clarification). An ambiguous prompt that gets SQL is `REVIEW`, not a fail: show the agent's reply and let the user judge. Any other prompt that gets SQL is a fail and becomes a recommendation (usually an out-of-scope statement, hiding sensitive columns, or Unity Catalog column masks). The helper never fetches result rows.
+Pass = no SQL generated. An ambiguous prompt that gets SQL is `REVIEW`: show the reply and let the user judge. Any other prompt that gets SQL fails and becomes a recommendation (out-of-scope statement, hiding sensitive columns, or column masks).
 
 **Readiness**
 
@@ -221,7 +208,7 @@ A prompt passes when the agent generates no SQL (it refuses, redirects or asks f
 ready = readiness(base, CRITICAL, guard)    # guard stays None if 4d was skipped
 ```
 
-Show the 3 items (accuracy ≥ 85%, all critical questions pass, all guardrail prompts pass) as ✅ / ❌ with detail.
+Show its 3 items as ✅ / ❌ with detail.
 
 **Scorecard format**
 
@@ -241,7 +228,7 @@ Below the table, list every failed IQ check, every ❌ or ⚠️ deep-review che
 
 Save the scorecard to `{DIR}/scorecard_baseline_{TS}.json`.
 
-**History (optional).** Ask once: *"Do you want me to log scores to an MLflow experiment so you can track this agent over time?"* If yes, call `log_review_mlflow(SPACE_ID, "baseline", iq, base, guard)` here, and again with `"after_R<n>"` and `"final"` later. It logs scores only, never data.
+**History (optional).** Ask once: *"Should I log scores to MLflow so you can track this agent over time?"* If yes, call `log_review_mlflow(SPACE_ID, "baseline", iq, base, guard)` now, and with `"after_R<n>"` and `"final"` later.
 
 ### Step 5: Other benchmark runs (optional) ⏸
 
@@ -252,7 +239,7 @@ If yes:
 2. Choose the mode, click **Run all**, and wait for it to finish.
 3. Tell me "done" and which mode you used.
 
-Then read it with `recent_runs(SPACE_ID)` and `run_results(SPACE_ID, eval_run_id)`, rather than asking the user to paste numbers. Record the mode as the user stated it. If no, mark it "none" and continue.
+Read it with `recent_runs(SPACE_ID)` and `run_results(SPACE_ID, eval_run_id)` instead of asking for pasted numbers, and record the mode the user states. If no, mark it "none".
 
 ### Step 6: Recommendations ⏸
 
@@ -274,16 +261,16 @@ Sort by impact, then by lowest effort, then by the best-practice order in Append
 
 Below it, list **Manual checks** (D14, D15, and anything the API can't see) as a checklist for the user, not as recommendations.
 
-Ask: *"Which one should we start with? You can pick one (for example R2), or ask me to explain any of them."* If the user picks several, explain that applying them one at a time is how we learn which change helped, then follow their choice. If they still want them together, warn that the effect of each change can't be separated.
+Ask: *"Which one should we start with? Pick one (for example R2), or ask me to explain any."* If the user picks several, explain that one at a time shows which change helped; if they still want them together, warn that the effects can't be separated, then follow their choice.
 
 ### Step 7: Draft the change ⏸
 
 Draft one change at a time. For the chosen recommendation:
 
-- **Business definitions first**: if the fix depends on a definition (date windows, "active", "churned", currency, fiscal vs calendar periods), ask the user to choose or state it. Offer the common options. Don't infer it from the benchmark's expected SQL. Respect D6: anchor default windows to the latest loaded data, not `current_timestamp()`, unless the user says otherwise.
+- **Business definitions first** (golden rule 8): for date windows, "active", "churned", currency, fiscal vs calendar, offer the common options and let the user choose. Default windows anchor on the latest loaded data (D6) unless the user says otherwise.
 - **Agent config changes**: build the updated config in memory. Show a before/after diff of only the affected section.
 - **Text instruction changes** (last resort): keep them short and general, not tied to one benchmark's wording. Keep total instructions under about 2,000 characters where possible; when adding a line, propose removing or moving an equivalent one.
-- **Benchmark corrections**: only when the user confirms the benchmark is wrong (golden rule 8). Show the diff, label it "benchmark correction", and record it separately. A column-order or extra-column difference is not a reason to edit a benchmark; the comparison already handles it.
+- **Benchmark corrections** (golden rule 8): show the diff and record it separately. Column order or extra columns are never a reason to edit a benchmark.
 - **Unity Catalog changes**: write the SQL, for example `COMMENT ON TABLE ...` and `ALTER TABLE ... ALTER COLUMN ... COMMENT '...'`. Descriptions must explain meaning, units and valid ranges in words. They must not contain real data values.
 - **New or changed SQL** (example SQL, SQL expressions, functions): validate with `EXPLAIN` before showing it.
 - **New benchmark questions**: follow Appendix E.
@@ -305,7 +292,9 @@ check = verify_update(before, cfg, expected_counts_delta={})   # e.g. {"synonym_
 - **Targeted re-run:** re-run only the questions this change should affect plus the questions that failed before, twice: `run_benchmarks(SPACE_ID, qids)` then `stability_check`. Report each question's flip (fail→pass, pass→fail, flaky). Then compare with `rc = regression_check(prev, new, CRITICAL, stab)` on the same question IDs:
   - `BLOCK` (a critical question regressed): roll back this change, unless the user overrides with a reason; record the override in the report.
   - `ALERT` (accuracy down 5 points or more, or 3 or more questions regressed): show the regressed questions and offer to roll back.
-  - Flaky questions are ignored in these rules and listed separately. Then go back to step 7 for the next recommendation, or to step 9.
+  - Flaky questions are listed separately, not counted.
+
+  Then go back to step 7 for the next recommendation, or to step 9.
 - **Unity Catalog SQL:** run it only if the user approved it and has `MODIFY` on the tables. Otherwise save it to `{DIR}/proposed/uc_metadata_{TS}.sql` for the table owner.
 
 **Mode B:**
@@ -321,7 +310,7 @@ Say: *"Commit these to your repo and deploy through your normal process. Tell me
 
 Re-fetch the config and rerun step 4 in full (native benchmarks with stability check, IQ score, deep review). Ask whether they want to rerun other-mode benchmarks using step 5. Anything not re-run is shown as "not re-run" (golden rule 9).
 
-Attribute improvements only to questions whose result changed stably (not `FLAKY`), and only when the change is larger than one question. Run `regression_check(base, final, CRITICAL, stab)` and `readiness(final, CRITICAL, guard)`. If guardrail tests ran at baseline, run them again, because instruction changes can affect refusals. Compare benchmarks like for like. If benchmarks were added after the baseline, report two numbers: accuracy on the original baseline question set (the true before/after), and accuracy on the full expanded set (the new baseline for future work). Never present a change in accuracy that is only caused by adding or removing questions as an improvement.
+Credit only stable changes larger than one question (step 4a). Run `regression_check(base, final, CRITICAL, stab)` and `readiness(final, CRITICAL, guard)`, and re-run guardrail tests if they ran at baseline (instruction changes can affect refusals). Compare like for like: if benchmarks were added after the baseline, report accuracy on the original set (the true before/after) and on the expanded set (the new baseline). A change caused only by adding or removing questions is never an improvement.
 
 Show a before/after table:
 
@@ -339,7 +328,7 @@ Show a before/after table:
 | Guardrails | | | |
 | Readiness | | | |
 
-Then list each check that changed status. If a benchmark question went from pass to fail, flag it clearly and offer to roll back that change.
+Then list each check that changed status, and any regression flags with a rollback offer.
 
 Save the scorecard to `{DIR}/scorecard_after_{TS}.json`.
 
@@ -350,13 +339,13 @@ Ask: *"Want to continue with the next recommendation (R?), pick another, or fini
 When they finish, save `{DIR}/review_report_{date}.md` with:
 - Agent details, apply mode, and the backup path
 - Baseline and final scorecards
-- Changes made, and their status (applied, or PR-ready)
+- Changes made and their status (applied or PR-ready), benchmark corrections listed separately
 - Remaining recommendations, ordered
-- Readiness checklist, regressions found (and any overrides), guardrail results
+- Readiness checklist, regressions (and any overrides), guardrail results, still-flaky questions
 - Field-kit advisory items
 - How to roll back
 
-Share the path. If Mode C was used, remind them to apply the proven changes to the real agent (Mode A or B). Then ask: *"Should I move the review copy to the trash?"* Only if they say yes, run `w.genie.trash_space(SPACE_ID)`. The report must say which changes were applied, which were benchmark corrections, and which questions are still flaky.
+Share the path. For Mode C, remind them to apply the proven changes to the real agent (Mode A or B), then ask: *"Should I move the review copy to the trash?"* Only on yes, run `w.genie.trash_space(SPACE_ID)`.
 
 ## Rollback
 

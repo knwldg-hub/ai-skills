@@ -72,6 +72,10 @@ Other useful prompts during a session:
 
 For the first runs, pick **Mode C (test on a copy)** at step 2. The skill clones the agent and makes all changes on the copy, so the original stays untouched. Benchmark runs show up in the copy's Benchmarks tab history, and the skill offers to trash the copy at the end.
 
+## Version history
+
+The skill file keeps only the current instructions; changes are listed here.
+
 ## What's new in v0.5
 
 Adopts the useful parts of the field-kit skills `automated_iq_scorer` and `benchmark_eval_harness`. The headline score stays the Genie Workbench IQ score, so it matches what customers see in Workbench.
@@ -101,3 +105,7 @@ Not adopted: the composite trust score (inputs undefined) and rules that fail va
 - One change at a time, with targeted benchmark re-runs
 - Guardrails against tuning to the benchmark and against reusing old scores
 - Failure reason to fix mapping, and a tested helper library
+
+## v0.2
+
+- Benchmark sufficiency check, benchmark drafting with approval, low-confidence labels, like-for-like before/after comparison
