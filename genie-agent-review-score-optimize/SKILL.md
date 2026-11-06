@@ -1,13 +1,17 @@
 ---
 name: genie-agent-review-score-optimize
-description: Review, score and optimize an existing Genie Agent (formerly Genie Space). Use when the user asks to review, audit, score, IQ-score, health-check, benchmark, tune, improve the accuracy of, or optimize a Genie Agent or Genie Space. Runs a guided loop - back up config, check benchmark coverage (and draft new benchmark questions with approval when there are too few), baseline IQ score plus deep review plus benchmarks, prioritized recommendations, implement approved fixes, then re-score with a before/after comparison.
+description: Review, score and optimize an existing Genie Agent (formerly Genie Space). Use when the user asks to review, audit, score, IQ-score, health-check, benchmark, tune, improve the accuracy of, or optimize a Genie Agent or Genie Space. Runs a guided loop - back up config, check benchmark coverage (and draft new benchmark questions with approval when there are too few), baseline IQ score (built in, no package install) plus deep review plus native Genie benchmark runs with stability checks, prioritized recommendations, implement approved fixes one at a time with targeted re-runs, then re-score with a like-for-like before/after comparison.
 ---
 
 # Genie Agent Review, Score & Optimize
 
-Version 0.2 (pilot). Changes in 0.2: benchmark sufficiency check (Step 3.5), benchmark drafting procedure (Appendix E), low-confidence labeling of benchmark scores, and like-for-like before/after comparison. Built for Activision Global Analytics on Databricks on Google Cloud (us-west4).
+Version 0.3 (pilot). Built for Activision Global Analytics on Databricks on Google Cloud (us-west4).
 
 You are guiding the user through an end-to-end review of one Genie Agent. Work in a notebook as the current user. Go one step at a time. At every ⏸ checkpoint, stop and wait for the user's answer.
+
+Changes in 0.3: no package dependency (IQ scoring is built in, ported from the Genie Workbench IQ Scan); native Genie benchmark runs through the API (same engine as the Benchmarks tab) with a chat-mode fallback; tested helper library (Appendix H) and config field map (Appendix G); stability re-runs for failing questions; one change at a time with targeted re-runs; failure reason to fix mapping (Appendix F); rules against tuning to the benchmark; stricter deep-review criteria; manual checks listed separately.
+
+Changes in 0.2: benchmark sufficiency check (Step 3.5), benchmark drafting (Appendix E), low-confidence labels, like-for-like before/after comparison.
 
 ## Golden rules (always follow)
 
@@ -17,29 +21,21 @@ You are guiding the user through an end-to-end review of one Genie Agent. Work i
 4. **Show code before running it**, and run it in notebook cells.
 5. **Don't guess.** If an API call fails or a field is missing, explain what happened and offer a manual alternative.
 6. **Use GCP documentation links** (docs.databricks.com/gcp/...).
-7. **Preserve IDs.** When editing the config, keep existing item IDs and all fields you aren't changing. New items get a new 32-character lowercase hex ID. Copy the structure of existing entries of the same type. If unsure about the config schema, use the built-in genie-space-authoring knowledge.
+7. **Preserve IDs.** When editing the config, keep existing item IDs and all fields you aren't changing. New items get a new 32-character lowercase hex ID (`new_id()`). Copy the structure of existing entries of the same type. Use the field map in Appendix G.
+8. **Don't tune to the test.** Never change a benchmark, or write an instruction, just so the agent's output matches a benchmark's expected SQL. When a failure depends on a business definition (for example what "last year" or "active player" means), ask the user for the definition first. A benchmark may be edited only when the user confirms it is wrong; label that a "benchmark correction" and report it separately from accuracy changes.
+9. **Never carry a score forward.** Every number in a scorecard must come from a run in this session or a run the user reports. If a score was not re-run, show "not re-run", not the old value.
+10. **Text instructions are the last resort.** Before proposing a text-instruction change, say why a higher fix in Appendix D (Unity Catalog metadata, synonyms, entity matching, SQL snippets, example SQL) can't solve it.
+11. **Use the helper library.** Run Appendix H once at the start and use its functions. Don't rediscover API field names by trial and error.
 
 ## Workflow
 
-Step 0 Setup → 1 Pick agent → 2 Apply mode → 3 Backup → 3.5 Benchmark sufficiency check → 4 Baseline score → 5 Agent-mode benchmarks (optional, manual) → 6 Recommendations → 7 Draft change → 8 Apply → 9 Re-score → 10 Next or finish
+Step 0 Setup → 1 Pick agent → 2 Apply mode → 3 Backup → 3.5 Benchmark sufficiency check → 4 Baseline score → 5 Other benchmark runs → 6 Recommendations → 7 Draft one change → 8 Apply and targeted re-run → (repeat 7–8) → 9 Full re-score → 10 Next or finish
 
 ### Step 0: Setup
 
-Make sure a notebook is attached to serverless compute or a cluster, then run:
+Make sure a notebook is attached to serverless compute or a cluster. No package installs are needed.
 
-```python
-%pip install genie-iq-score-lite --quiet
-```
-
-If the install fails (for example, no access to PyPI), continue anyway. Use the built-in rubric in Appendix A and label results "built-in rubric (approximation of the Genie Workbench IQ Scan)".
-
-```python
-import json, datetime, os, hashlib
-from databricks.sdk import WorkspaceClient
-w = WorkspaceClient()
-ME = w.current_user.me().user_name
-REVIEW_ROOT = f"/Workspace/Users/{ME}/genie_agent_reviews"
-```
+Copy the code in Appendix H into one notebook cell exactly as written and run it. It defines `w`, `ME`, `REVIEW_ROOT` and the helper functions used in every step. Tell the user it's a read-only setup cell. If a helper fails, show the error and use Appendix G to work out the field, rather than guessing.
 
 ### Step 1: Pick the agent ⏸
 
@@ -47,15 +43,16 @@ Ask: *"Which Genie Agent should I review? Paste the agent ID (the 32-character I
 
 If they give a name, list the agents they can access (`w.genie.list_spaces()`) and match on title.
 
-Fetch the config:
+Fetch the config and summarize it:
 
 ```python
 SPACE_ID = "<agent-id>"
-space = w.genie.get_space(SPACE_ID, include_serialized_space=True)
-cfg = json.loads(space.serialized_space)
+space, cfg = get_cfg(SPACE_ID)
+uc = uc_info(cfg)          # Unity Catalog metadata only: type, comment coverage
+summary = summarize(cfg, uc)
 ```
 
-Show a summary with counts only: title, description length, number of tables and metric views, text-instruction character count, example SQL count, SQL functions, join specs, SQL snippets (filters, expressions, measures), benchmark question count, and warehouse ID.
+Show the title, description length, warehouse ID and the `summary` counts. `summarize` detects metric views from Unity Catalog (`table_type = METRIC_VIEW`), because metric views can appear under `data_sources.tables` in the config. Don't call a metric view a table.
 
 Ask: *"Is this the right agent?"*
 
@@ -78,9 +75,11 @@ copy = w.genie.create_space(
     title=f"[REVIEW COPY] {space.title}",
     description=space.description,
 )
+SOURCE_ID, SPACE_ID = SPACE_ID, copy.space_id
+space, cfg = get_cfg(SPACE_ID)
 ```
 
-Continue with the copy's ID. Tell the user the copy's ID, and that they can trash it when done.
+Continue with the copy's ID. Tell the user the copy's ID, and that you'll offer to trash it at the end.
 
 ### Step 3: Backup
 
@@ -97,16 +96,16 @@ Tell the user where the backup is saved.
 
 ### Step 3.5: Benchmark sufficiency check ⏸
 
-Benchmarks are how every other fix is measured, so check them before scoring. Count the benchmark questions in the config, and how many have an expected SQL answer (only those can be auto-checked in Appendix C).
+Benchmarks are how every other fix is measured, so check them before scoring. Use `summary["benchmarks"]` and `summary["benchmarks_with_sql"]` (only questions with expected SQL can be auto-checked in Appendix C).
 
 Classify coverage:
 
 | Benchmarks with expected SQL | Status | What to tell the user |
 |---|---|---|
-| 0 | ❌ None | "There are no benchmarks to run, so accuracy can't be measured and IQ checks 9, 11 and 12 will fail." |
+| 0 | ❌ None | "There are no benchmarks to run, so accuracy can't be measured and IQ checks 10, 11 and 12 will fail." |
 | 1–9 | ⚠️ Low confidence | "With only n questions, each one moves accuracy by about 100/n points. The accuracy score is indicative only." |
 | 10–14 | ⚠️ Thin | "Enough to score, but edge cases are probably not covered." |
-| 15 or more | ✅ OK | Continue. Still check edge-case coverage (D11) in step 4b. |
+| 15 or more | ✅ OK | Continue. Still check edge-case coverage (D11) in step 4c. |
 
 If the status is ❌ or ⚠️, ask: *"Do you want me to draft additional benchmark questions now, before the baseline score? (recommended / later / no)"*
 
@@ -118,73 +117,65 @@ Record the decision in the scorecard.
 
 ### Step 4: Baseline score
 
-Run all three parts, then show one scorecard.
+Run all three parts, then show one scorecard. Run benchmarks first (4a), because the IQ score needs the accuracy.
 
-**4a. IQ score (12 checks)**
+**4a. Benchmarks (Appendix C)**
 
-If `genie-iq-score-lite` is installed:
-
-```python
-from genie_iq_score_lite import calculate_score
-iq = calculate_score(cfg)
-```
-
-Otherwise, score each check in Appendix A yourself. For the description checks (2 and 3), get table and column comments from Unity Catalog with `w.tables.get(full_name)`. Count only; never read data. Agent-level column descriptions in the config also count.
-
-**4b. Deep review (Appendix B)**
-
-Evaluate checks D1 to D15. For each, give a status (✅ pass, ⚠️ warn, ❌ fail) and evidence. Evidence can quote config text or SQL, but never data values.
-
-For D3, validate each example SQL without returning data:
+Tell the user how many questions will run, that it uses warehouse compute and Genie usage, and that the run will appear in the agent's Benchmarks tab history. Then:
 
 ```python
-w.statement_execution.execute_statement(
-    warehouse_id=space.warehouse_id,
-    statement="EXPLAIN " + sql.strip().rstrip(";"),
-    wait_timeout="30s",
-)
+base = run_benchmarks(SPACE_ID)                 # native run, same engine as the Benchmarks tab
+failing = [r["benchmark_question_id"] for r in base["results"] if r["assessment"] != "GOOD"]
+stab = stability_check(SPACE_ID, failing, reps=2) if failing else {}
 ```
 
-**4c. Chat-mode benchmarks (automatic)**
+If `run_benchmarks` raises because the eval API isn't available (older SDK, 404 or permission error), say so and use `chat_benchmarks(SPACE_ID, cfg, space.warehouse_id)` instead. Label that result "chat-mode harness (approximation)".
 
-Run the procedure in Appendix C. Before starting, tell the user how many questions will run. It takes about 15 seconds per question, and it uses warehouse compute and Genie usage.
+Report accuracy with its resolution: *"x% (passed/n). One question = 100/n points."* For each failing question show its text, reason codes and `STABLE_FAIL` or `FLAKY`. Only `STABLE_FAIL` questions drive fix recommendations. `FLAKY` questions get a separate recommendation about ambiguity (wording, missing definition, or competing example SQL). Never treat a change of one question or less as a real improvement or regression.
 
 If fewer than 10 benchmarks have expected SQL, label the result "low confidence (n questions)" everywhere it appears. If there are none, report "not measurable" instead of 0%.
+
+**4b. IQ score (Appendix A, built in)**
+
+```python
+iq = iq_score(cfg, uc, best_accuracy=base["accuracy"])
+```
+
+Show score, tier and every check with its detail and severity. This uses the same rules as the Genie Workbench IQ Scan, so it can be stricter than intuition (for example, check 5 fails for a single-source agent with no join specs). Report the Workbench result as is, and mark that case "N/A for recommendations".
+
+**4c. Deep review (Appendix B)**
+
+Evaluate checks D1 to D13. For each, give a status (✅ pass, ⚠️ warn, ❌ fail) and evidence that meets the pass criteria in Appendix B. Evidence can quote config text or SQL, but never data values. Use `sql_in_prose_lines(text)` for D1 and `explain_ok(space.warehouse_id, sql)` for D3. List D14 and D15 under **Manual checks** with what the user should look at; don't score them.
 
 **Scorecard format**
 
 | Area | Baseline |
 |---|---|
 | IQ score | x/12 (tier: Not Ready / Ready to Optimize / Trusted) |
-| Deep review | n ✅ · n ⚠️ · n ❌ |
-| Benchmarks (chat mode) | x% (passed/total) |
-| Benchmarks (agent mode) | x%, or "not run" |
+| Deep review (D1–D13) | n ✅ · n ⚠️ · n ❌ |
+| Benchmarks (native run) | x% (passed/n) · 1 question = y pts |
+| Failing questions | n stable · n flaky |
+| Other benchmark runs (step 5) | x% (mode as reported), or "none" |
 | Benchmark coverage | n questions (n with expected SQL) · ✅ / ⚠️ / ❌ from step 3.5 |
 
-Below the table, list every failed IQ check and every ❌ or ⚠️ deep-review check, one line each.
+Below the table, list every failed IQ check, every ❌ or ⚠️ deep-review check, and the manual checks, one line each.
 
 Save the scorecard to `{DIR}/scorecard_baseline_{TS}.json`.
 
-### Step 5: Agent-mode benchmarks (optional, manual) ⏸
+### Step 5: Other benchmark runs (optional) ⏸
 
-Explain: *"Genie Code can't start Agent-mode benchmark runs through the API yet. If you'd like, run them in the UI and I'll include the result."*
+The API run in 4a uses the platform's default benchmark mode. If the user also wants a run in another mode (for example Agent mode in the UI), ask: *"Do you want to run benchmarks in another mode from the Benchmarks tab? I can read the result directly once it finishes."*
 
-Ask: *"Do you want to run Agent-mode benchmarks now?"*
+If yes:
+1. Open the Genie Agent (the copy, in Mode C) and go to the **Benchmarks** tab.
+2. Choose the mode, click **Run all**, and wait for it to finish.
+3. Tell me "done" and which mode you used.
 
-If yes, give these steps:
-1. Open the Genie Agent and go to the **Benchmarks** tab.
-2. If your workspace has a mode option for benchmark runs, choose **Agent mode**.
-3. Click **Run all** (or select all questions and run them) and wait for it to finish.
-4. Note the overall accuracy and the failing questions.
-5. Paste the accuracy and the failing question text back here.
-
-When they reply, record the result in the scorecard and explain what's next: *"I'll use the failing questions to rank the recommendations, then show you the list."*
-
-If no, mark it "not run" and continue. Remind them they can run it at re-score time.
+Then read it with `recent_runs(SPACE_ID)` and `run_results(SPACE_ID, eval_run_id)`, rather than asking the user to paste numbers. Record the mode as the user stated it. If no, mark it "none" and continue.
 
 ### Step 6: Recommendations ⏸
 
-Build one recommendation per failed or warned item. Combine related items. Each recommendation has:
+Build one recommendation per failed or warned item, and one per group of `STABLE_FAIL` questions that share a reason code. Use Appendix F to map reason codes to fixes. Combine related items. Don't make recommendations from IQ check 5 when it is N/A, or from manual checks. Each recommendation has:
 
 - **ID** (R1, R2, …) and a short title
 - **Why**: the evidence from step 4
@@ -192,19 +183,26 @@ Build one recommendation per failed or warned item. Combine related items. Each 
 - **Impact** (High / Medium / Low) and **Effort** (Low / Medium / High). Use Appendix D defaults, adjusted to the evidence.
 - **Moves**: which IQ checks, deep-review checks and benchmark questions it should improve
 - **Change type**: agent config, Unity Catalog metadata, or both
+- **Fix level**: its row in Appendix D. If it's a text-instruction change, say why a higher level can't fix it (golden rule 10).
+- **Needs a definition?**: yes if it depends on a business definition the user must confirm (golden rule 8)
 
 Sort by impact, then by lowest effort, then by the best-practice order in Appendix D. Exception: if benchmark coverage from step 3.5 is ❌ or ⚠️ Low confidence (fewer than 10 with expected SQL), put the benchmark recommendation first and set its impact to High, because other fixes can't be measured reliably without it. Show the top 10 as a table:
 
-| ID | Recommendation | Impact | Effort | Moves | Type |
-|---|---|---|---|---|---|
+| ID | Recommendation | Impact | Effort | Moves | Fix level | Type |
+|---|---|---|---|---|---|---|
 
-Ask: *"Which one should we start with? You can pick one (for example R2), say 'top 3', or ask me to explain any of them."*
+Below it, list **Manual checks** (D14, D15, and anything the API can't see) as a checklist for the user, not as recommendations.
+
+Ask: *"Which one should we start with? You can pick one (for example R2), or ask me to explain any of them."* If the user picks several, explain that applying them one at a time is how we learn which change helped, then follow their choice. If they still want them together, warn that the effect of each change can't be separated.
 
 ### Step 7: Draft the change ⏸
 
-For the chosen recommendation:
+Draft one change at a time. For the chosen recommendation:
 
+- **Business definitions first**: if the fix depends on a definition (date windows, "active", "churned", currency, fiscal vs calendar periods), ask the user to choose or state it. Offer the common options. Don't infer it from the benchmark's expected SQL. Respect D6: anchor default windows to the latest loaded data, not `current_timestamp()`, unless the user says otherwise.
 - **Agent config changes**: build the updated config in memory. Show a before/after diff of only the affected section.
+- **Text instruction changes** (last resort): keep them short and general, not tied to one benchmark's wording. Keep total instructions under about 2,000 characters where possible; when adding a line, propose removing or moving an equivalent one.
+- **Benchmark corrections**: only when the user confirms the benchmark is wrong (golden rule 8). Show the diff, label it "benchmark correction", and record it separately. A column-order or extra-column difference is not a reason to edit a benchmark; the comparison already handles it.
 - **Unity Catalog changes**: write the SQL, for example `COMMENT ON TABLE ...` and `ALTER TABLE ... ALTER COLUMN ... COMMENT '...'`. Descriptions must explain meaning, units and valid ranges in words. They must not contain real data values.
 - **New or changed SQL** (example SQL, SQL expressions, functions): validate with `EXPLAIN` before showing it.
 - **New benchmark questions**: follow Appendix E.
@@ -216,11 +214,14 @@ Ask: *"Apply this change? (yes / edit / skip)"*
 **Mode A or C:**
 
 ```python
+before = cfg
 w.genie.update_space(SPACE_ID, serialized_space=json.dumps(new_cfg))
-after = json.loads(w.genie.get_space(SPACE_ID, include_serialized_space=True).serialized_space)
+space, cfg = get_cfg(SPACE_ID)
+check = verify_update(before, cfg, expected_counts_delta={})   # e.g. {"synonym_cols": 2}
 ```
 
-- **Verify the agent config:** every section count must equal the "before" count, plus or minus only the intended change, and existing IDs must still be present. If not, restore the backup and report it.
+- **Verify the agent config:** `check["ok"]` must be true: counts moved only as intended and no existing IDs were lost. If not, restore the backup and report it.
+- **Targeted re-run:** re-run only the questions this change should affect plus the questions that failed before, twice: `run_benchmarks(SPACE_ID, qids)` then `stability_check`. Report each question's flip (fail→pass, pass→fail, flaky). If a previously passing question now fails stably, flag it and offer to roll back this change before moving on. Then go back to step 7 for the next recommendation, or to step 9.
 - **Unity Catalog SQL:** run it only if the user approved it and has `MODIFY` on the tables. Otherwise save it to `{DIR}/proposed/uc_metadata_{TS}.sql` for the table owner.
 
 **Mode B:**
@@ -234,9 +235,9 @@ Say: *"Commit these to your repo and deploy through your normal process. Tell me
 
 ### Step 9: Re-score
 
-Re-fetch the config and rerun step 4 (IQ score, deep review, chat-mode benchmarks). Ask whether they want to rerun Agent-mode benchmarks using the step 5 instructions.
+Re-fetch the config and rerun step 4 in full (native benchmarks with stability check, IQ score, deep review). Ask whether they want to rerun other-mode benchmarks using step 5. Anything not re-run is shown as "not re-run" (golden rule 9).
 
-Compare benchmarks like for like. If benchmarks were added after the baseline, report two numbers: accuracy on the original baseline question set (the true before/after), and accuracy on the full expanded set (the new baseline for future work). Never present a change in accuracy that is only caused by adding or removing questions as an improvement.
+Attribute improvements only to questions whose result changed stably (not `FLAKY`), and only when the change is larger than one question. Compare benchmarks like for like. If benchmarks were added after the baseline, report two numbers: accuracy on the original baseline question set (the true before/after), and accuracy on the full expanded set (the new baseline for future work). Never present a change in accuracy that is only caused by adding or removing questions as an improvement.
 
 Show a before/after table:
 
@@ -245,9 +246,11 @@ Show a before/after table:
 | IQ score | | | |
 | Tier | | | |
 | Deep review (✅ / ⚠️ / ❌) | | | |
-| Benchmarks, chat mode | | | |
-| Benchmarks, agent mode | | | |
+| Benchmarks (native run) | | | |
+| Failing questions (stable / flaky) | | | |
+| Other benchmark runs | | | |
 | Benchmark coverage (count) | | | |
+| Benchmark corrections | | | |
 
 Then list each check that changed status. If a benchmark question went from pass to fail, flag it clearly and offer to roll back that change.
 
@@ -264,7 +267,7 @@ When they finish, save `{DIR}/review_report_{date}.md` with:
 - Remaining recommendations, ordered
 - How to roll back
 
-Share the path. If Mode C was used, remind them to apply the proven changes to the real agent (Mode A or B) and to trash the copy.
+Share the path. If Mode C was used, remind them to apply the proven changes to the real agent (Mode A or B). Then ask: *"Should I move the review copy to the trash?"* Only if they say yes, run `w.genie.trash_space(SPACE_ID)`. The report must say which changes were applied, which were benchmark corrections, and which questions are still flaky.
 
 ## Rollback
 
@@ -277,22 +280,24 @@ For Mode B, revert the commit in their repo.
 
 ## Appendix A: IQ score rubric (12 checks)
 
-This approximates the Genie Workbench IQ Scan. If `genie-iq-score-lite` is available, its result takes precedence.
+Built in (`iq_score` in Appendix H). Ported from the Genie Workbench IQ Scan (`genie_space_optimizer/iq_scan/scoring.py`), so no package install is needed and results match what the customer sees in Workbench. Descriptions count from the agent config or from Unity Catalog comments (Workbench fills blanks from Unity Catalog the same way).
 
-| # | Check | Pass when |
-|---|---|---|
-| 1 | Agent description | Present and meaningful: says what questions it answers and for whom |
-| 2 | Table descriptions | ≥ 80% of tables have a description (Unity Catalog or agent-level) |
-| 3 | Column descriptions | ≥ 50% of columns have a description |
-| 4 | Text instructions | Total length > 50 characters |
-| 5 | Join specs | Present whenever there are 2 or more regular tables (metric views excluded) |
-| 6 | Data source count | Between 1 and 12 |
-| 7 | SQL guidance | At least 1 SQL function, expression, measure, filter or example SQL |
-| 8 | Entity matching / format assistance | Enabled on at least 1 column |
-| 9 | Benchmarks | At least 10 benchmark questions |
-| 10 | Noisy columns | No excess of visible internal or noisy columns (surrogate keys, ETL/audit timestamps, raw JSON) |
-| 11 | Optimization run | A benchmark run has completed (from this session or reported by the user) |
-| 12 | Accuracy | Best benchmark accuracy ≥ 85% |
+| # | Check | Pass when | Warning (still passes) |
+|---|---|---|---|
+| 1 | Data sources exist | At least 1 table or metric view | |
+| 2 | Table descriptions | ≥ 80% of tables described (metric-view-only agents pass) | < 100% |
+| 3 | Column descriptions | ≥ 50% of configured columns described (metric-view-only agents pass) | < 80%; no synonyms anywhere |
+| 4 | Text instructions | Total length > 50 characters | > 2,000 characters; SQL found in prose (`sql_in_prose_lines`) |
+| 5 | Join specifications | At least 1 join spec. Workbench fails this even for a single source; report it, but treat as N/A for recommendations when there is 1 source | |
+| 6 | Data source count | Between 1 and 12 | |
+| 7 | Example SQLs | 8 or more | 8–9 (10–15 is the sweet spot); more than half lack `usage_guidance` |
+| 8 | SQL snippets | At least 1 SQL function, measure, filter or expression | No filters, or no measures |
+| 9 | Entity / format matching | Enabled on at least 1 column | More than 100 entity-matching columns (limit 120 per agent); tables with row filters or column masks silently disable entity matching |
+| 10 | Benchmarks | 10 or more benchmark questions | |
+| 11 | Benchmark run completed | A completed benchmark run covering the benchmark set (this session, or read with `recent_runs`) | |
+| 12 | Accuracy | Accuracy of that run ≥ 85% | |
+
+If an earlier review used the v0.1/v0.2 rubric, scores aren't comparable; say so when comparing.
 
 **Tiers:**
 - **Not Ready**: any of checks 1–10 fails
@@ -305,8 +310,8 @@ These come from real Genie Agent reviews.
 
 | # | Check | Flag when |
 |---|---|---|
-| D1 | Logic in text | Text instructions contain metric formulas, filters, joins or title mappings that could be SQL expressions, join specs or synonyms |
-| D2 | Instruction size | Instructions are very long (as a guide, more than about 8,000 characters or 15 sections), or mix persona and tone text with data rules |
+| D1 | Logic in text | `sql_in_prose_lines` finds SQL in the instructions, or the text defines metric formulas, filters, joins or name mappings that could be SQL snippets, join specs or synonyms |
+| D2 | Instruction size | ⚠️ over 2,000 characters; ❌ over about 8,000 characters or 15 sections; or persona and tone text mixed with data rules |
 | D3 | Example SQL validity | Any example SQL fails `EXPLAIN` |
 | D4 | Example SQL logic | Window functions partitioned on the wrong column; averaging rates or averages instead of dividing sums; comments describe a filter the SQL doesn't apply; a date window that doesn't match the stated default (for example `BETWEEN DATE_SUB(CURRENT_DATE(), 8) AND DATE_SUB(CURRENT_DATE(), 1)` is 8 days); `COUNT(*)` used as a user count; a missing `DISTINCT` on user metrics |
 | D5 | Stale facts | Instructions contain hard-coded dates, row counts or measured values that will go out of date |
@@ -314,31 +319,30 @@ These come from real Genie Agent reviews.
 | D7 | Data types | Numeric measures stored as STRING (they need CAST in SQL) |
 | D8 | Metadata contradictions | Instructions say column comments are wrong or not to be trusted. Fix them in Unity Catalog instead |
 | D9 | Trap columns | Columns the instructions warn against (misleading flags, always-NULL, deprecated) are still visible |
-| D10 | Scope and overlap | Sources span several domains or grains; or the description overlaps other agents. Ask the user for related agent IDs and compare descriptions |
+| D10 | Scope and overlap | Sources span several domains or grains; or the description overlaps other agents. Pass only when both are checked: the scope is one domain or grain, and the user either confirmed there are no related agents or gave their IDs and the descriptions don't overlap. Adding out-of-scope text alone doesn't pass D10 |
 | D11 | Benchmark coverage | Fewer than 15 questions; or edge cases documented in the instructions have no benchmark |
-| D12 | Description for routing | No sample questions; contains technical detail that doesn't help routing; doesn't say what's out of scope |
+| D12 | Description for routing | Pass needs all three: sample questions, a statement of what's out of scope, and no technical detail that doesn't help routing |
 | D13 | Response verbosity | Instructions force a long plan or many metadata fields on every answer |
-| D14 | Feedback signal | Few or no thumbs up or down, or review comments (ask the user to check the Monitoring tab) |
-| D15 | Production readiness | Name contains [STAGE] or [DEV], or the prod agent isn't certified |
+| D14 | Feedback signal (manual check) | Few or no thumbs up or down, or review comments. Ask the user to check the Monitoring tab. Not scored |
+| D15 | Production readiness (manual check) | Name contains [STAGE] or [DEV], or the prod agent isn't certified. Not scored |
 
-## Appendix C: Chat-mode benchmark procedure
+## Appendix C: Benchmark evaluation
 
-For each benchmark question that has an expected SQL answer:
+**Primary: native benchmark runs (`run_benchmarks`).** Uses the Genie eval API (`genie_create_eval_run`, `genie_get_eval_run`, `genie_list_eval_results`, `genie_get_eval_result_details`), the same engine as the Benchmarks tab. Each question comes back `GOOD` or `BAD` (or needs review) with Genie reason codes (Appendix F). Pass `question_ids` to run a subset for targeted re-runs. Runs show up in the Benchmarks tab history. In testing, 2 questions took about 35 seconds.
 
-1. Ask the agent the question: `w.genie.start_conversation_and_wait(SPACE_ID, question)`. If that method isn't in the installed SDK, use `POST /api/2.0/genie/spaces/{space_id}/start-conversation` and poll the message.
-2. Get the generated SQL and its result from the query attachment.
-3. Run the expected SQL on the agent's warehouse with the Statement Execution API.
-4. Compare the two results **in memory only**:
-   - same column count
-   - same row count
-   - same values after sorting rows (compare hashes of each row)
-   If either result has more than 5,000 rows, compare only column count and row count, and note it.
-5. Record pass or fail and the reason (row count, columns, or values). Never print values.
-6. Wait about 15 seconds between questions to stay within Genie API limits.
+**Fallback: chat-mode harness (`chat_benchmarks`).** Use only if the eval API isn't available. For each question with expected SQL it asks the agent in chat mode, runs the expected SQL on the agent's warehouse, and compares results in memory with `compare_results`:
+- Rows and columns are compared regardless of order, and numbers are compared after rounding to 4 decimals, so column order alone never fails a question.
+- Extra columns (all expected columns present, plus more) are `PASS_EXTRA_COLUMNS`: counted as a pass, listed separately.
+- Both results empty is a pass. Expected SQL that errors, is missing or returns no rows is `EXCLUDED` from the denominator and listed.
+- Genie's 5,000-row result cap is a pass when the expected result is larger; otherwise above 5,000 rows only counts are compared.
+- It waits about 15 seconds between questions. Test conversations appear in the Monitoring tab under the user's name.
 
-Report: accuracy = passed / total, and the failing **question text** only.
+**Stability (`stability_check`).** Genie isn't deterministic. Re-run failing questions twice; a question that passes on any re-run is `FLAKY`, otherwise `STABLE_FAIL`. Report both counts.
 
-Note: this approximates the UI benchmark evaluation. The Benchmarks tab in the UI is the source of truth. These test conversations will appear in the agent's Monitoring tab under the user's name.
+**Reporting rules.**
+- Accuracy = passed / scored questions, with the size of one question in points.
+- Show failing **question text** and reason codes only. Never print values.
+- Use the same question set for before and after. Report excluded questions.
 
 ## Appendix D: Fix priority and default impact/effort
 
@@ -354,6 +358,8 @@ The order follows the Databricks best practices: metadata first, text instructio
 | 6 | Expand benchmarks to 15–20, including edge cases (Appendix E). Move to first and set impact to High when fewer than 10 have expected SQL | Medium | Medium |
 | 7 | Description, sample questions, redirects to other agents | Medium | Low |
 | 8 | Remove [STAGE] from the name and certify | Low (routing boost) | Low |
+
+Text instructions (row 5) come after rows 1–4 for a reason: in Genie, structured config (metadata, synonyms, snippets, example SQL) is applied more reliably than prose, and long instructions push out higher-value context. Adding a text rule to fix one benchmark usually trades one failure for another.
 
 ## Appendix E: Drafting benchmark questions
 
@@ -409,6 +415,377 @@ Ask: *"Which of these should I add? You can say 'all', list numbers (for example
 - **Mode B:** add them to `{DIR}/proposed/serialized_space_{TS}.json` and list them in `CHANGES_{TS}.md`.
 
 Tell the user how many were added and the new total. Suggest they review the out-of-scope questions in the UI Benchmarks tab, since those can't be auto-checked.
+
+## Appendix F: Failure reason → likely fix
+
+Reason codes come from native benchmark runs (Genie eval taxonomy) or from `compare_results`. Use them to pick the fix level, highest first. Confirm business definitions with the user where marked †.
+
+| Reason code | What it usually means | Try first | Then |
+|---|---|---|---|
+| `RESULT_MISSING_COLUMNS`, `LLM_JUDGE_INCOMPLETE_OR_PARTIAL_OUTPUT` | Answer leaves out a requested measure or dimension | Measure or dimension in the metric view, or a SQL measure snippet; example SQL that returns the full shape | Check whether the question wording really asks for it |
+| `RESULT_EXTRA_COLUMNS` | Extra context columns | Often harmless; look for instructions that force "context" columns (D13) | Remove the forcing instruction |
+| `RESULT_MISSING_ROWS`, `RESULT_EXTRA_ROWS`, `LLM_JUDGE_MISSING_OR_INCORRECT_FILTER` | Wrong or missing filter, often a date window | Filter snippet with the confirmed definition †; entity matching on filter columns | Example SQL showing the filter |
+| `EMPTY_RESULT` | Filter value doesn't match stored values | Entity matching or format assistance on that column; synonyms | Column description with valid values described in words |
+| `SINGLE_CELL_DIFFERENCE`, `LLM_JUDGE_INCORRECT_METRIC_CALCULATION` | Metric computed differently | Measure snippet or metric-view measure (ratio of sums, distinct counts) † | Example SQL |
+| `LLM_JUDGE_MISSING_OR_INCORRECT_AGGREGATION` | Wrong grain or grouping | Example SQL at the right grain; dimension expressions | Column descriptions for grain |
+| `LLM_JUDGE_INCORRECT_TABLE_OR_FIELD_USAGE` | Picked the wrong column or table | Column descriptions and synonyms; hide trap columns (D9) | Narrow the data sources |
+| `LLM_JUDGE_MISSING_OR_INCORRECT_JOIN` | Join missing or wrong | Join spec | Example SQL with the join |
+| `LLM_JUDGE_INCORRECT_FUNCTION_USAGE` | Wrong SQL function or parameters | Trusted SQL function | Example SQL |
+| `LLM_JUDGE_FORMATTING_ERROR` | Usually ordering or presentation | Check whether order matters to the question; often not a real error | Example SQL with explicit ORDER BY |
+| `LLM_JUDGE_INSTRUCTION_COMPLIANCE_OR_MISSING_BUSINESS_LOGIC` | A rule in text isn't applied | Move the rule into a SQL snippet or example SQL † | Shorten competing instructions |
+| `LLM_JUDGE_MISINTERPRETATION_OF_USER_REQUEST` | Question is ambiguous or misread | Sample questions and synonyms for the business term † | Benchmark correction, only with user confirmation |
+| `EMPTY_GOOD_SQL` | The benchmark's expected SQL returns no rows | Benchmark correction with the user (excluded from accuracy until fixed) | |
+| `COLUMN_TYPE_DIFFERENCE` | Same values, different type | Fix the data type (D7) or CAST in the measure | |
+| `FLAKY` (from stability check) | Agent answers differently run to run | Remove ambiguity: definition †, competing example SQL, conflicting instructions | Benchmark wording, with user confirmation |
+
+## Appendix G: Config and API field map
+
+Tested on databricks-sdk 0.122.0. String fields in the config are usually lists of strings; join them (`_txt`).
+
+| Item | Location |
+|---|---|
+| Tables | `data_sources.tables[]`: `identifier`, `column_configs[]` |
+| Metric views | `data_sources.metric_views[]`, and can also appear under `data_sources.tables[]`; detect with Unity Catalog `table_type = METRIC_VIEW` |
+| Column config | `column_name`, `enable_entity_matching`, `enable_format_assistance`, `synonyms[]`, optional `description` |
+| Text instructions | `instructions.text_instructions[]`: `id`, `content[]` |
+| Example SQL | `instructions.example_question_sqls[]`: `id`, `question[]`, `sql[]`, optional `usage_guidance` |
+| SQL functions, join specs | `instructions.sql_functions[]`, `instructions.join_specs[]` |
+| SQL snippets | `instructions.sql_snippets.measures[]`, `.filters[]`, `.expressions[]` |
+| Sample questions | `config.sample_questions[]`: `id`, `question[]` |
+| Benchmarks | `benchmarks.questions[]`: `id`, `question[]`, `answer[]` with `{format: "SQL", content[]}` |
+| Copy ID | `w.genie.create_space(...)` returns `.space_id` |
+| Chat answer SQL | `start_conversation_and_wait(...)` → `attachments[i].query.query` |
+| Chat answer rows | `get_message_attachment_query_result(space_id, conversation_id, message_id, attachment_id).statement_response.result.data_array` |
+| Benchmark run | `genie_create_eval_run(space_id, benchmark_question_ids=None)` → `.eval_run_id`; status from `genie_get_eval_run` (`DONE` when finished) |
+| Benchmark results | `genie_list_eval_results` → `result_id`, `benchmark_question_id`, `question`; `genie_get_eval_result_details` → `assessment` (`GOOD`/`BAD`), `assessment_reasons[]` |
+
+## Appendix H: Helper library (run once in Step 0)
+
+Copy this into one cell exactly as written. It reads metadata and runs benchmarks; it never prints data values.
+
+```python
+import json, re, time, datetime, os, uuid, copy as _copy
+from collections import Counter
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.service.sql import StatementState
+
+w = WorkspaceClient()
+ME = w.current_user.me().user_name
+REVIEW_ROOT = f"/Workspace/Users/{ME}/genie_agent_reviews"
+
+# ---------- config ----------
+def get_cfg(space_id):
+    """Fetch a Genie Agent and its parsed serialized config."""
+    sp = w.genie.get_space(space_id, include_serialized_space=True)
+    return sp, json.loads(sp.serialized_space)
+
+def _txt(x):
+    """Join config string fields, which are usually lists of strings."""
+    return "".join(x) if isinstance(x, list) else (x or "")
+
+def _sources(cfg):
+    """Return (tables, metric_views) lists from the config."""
+    ds = cfg.get("data_sources", {})
+    return list(ds.get("tables", [])), list(ds.get("metric_views", []))
+
+def new_id():
+    """New 32-character lowercase hex ID for config items."""
+    return uuid.uuid4().hex
+
+def uc_info(cfg):
+    """Unity Catalog metadata per data source: type and comment coverage. Metadata only."""
+    out = {}
+    t, mv = _sources(cfg)
+    for s in t + mv:
+        ident = s.get("identifier", "").replace("`", "")
+        try:
+            ti = w.tables.get(ident)
+            cols = ti.columns or []
+            out[ident] = {"type": str(ti.table_type.value if ti.table_type else ""),
+                          "has_comment": bool(ti.comment), "n_cols": len(cols),
+                          "n_col_comments": sum(1 for c in cols if c.comment),
+                          "col_comments": {c.name.lower(): bool(c.comment) for c in cols}}
+        except Exception as e:
+            out[ident] = {"error": type(e).__name__}
+    return out
+
+def summarize(cfg, uc=None):
+    """Counts-only summary of the config. Metric views are detected from Unity Catalog."""
+    uc = uc if uc is not None else uc_info(cfg)
+    t, mv = _sources(cfg)
+    ins = cfg.get("instructions", {}); snip = ins.get("sql_snippets", {}) or {}
+    cols = [c for s in t + mv for c in s.get("column_configs", [])]
+    is_mv = lambda s: "METRIC" in uc.get(s.get("identifier", "").replace("`", ""), {}).get("type", "")
+    bq = cfg.get("benchmarks", {}).get("questions", [])
+    return {
+        "tables": sum(1 for s in t if not is_mv(s)),
+        "metric_views": len(mv) + sum(1 for s in t if is_mv(s)),
+        "column_configs": len(cols),
+        "entity_matching_cols": sum(1 for c in cols if c.get("enable_entity_matching")),
+        "format_assistance_cols": sum(1 for c in cols if c.get("enable_format_assistance") or c.get("format_assistance_enabled")),
+        "synonym_cols": sum(1 for c in cols if c.get("synonyms")),
+        "text_instruction_chars": sum(len(_txt(x.get("content"))) for x in ins.get("text_instructions", [])),
+        "example_sqls": len(ins.get("example_question_sqls", [])),
+        "sql_functions": len(ins.get("sql_functions", [])),
+        "join_specs": len(ins.get("join_specs", [])),
+        "snippets_measures": len(snip.get("measures", [])),
+        "snippets_filters": len(snip.get("filters", [])),
+        "snippets_expressions": len(snip.get("expressions", [])),
+        "sample_questions": len(cfg.get("config", {}).get("sample_questions", [])),
+        "benchmarks": len(bq),
+        "benchmarks_with_sql": sum(1 for q in bq if expected_sql(q).strip()),
+    }
+
+def expected_sql(q):
+    """Expected SQL text of a benchmark question, or ''."""
+    return next((_txt(a.get("content")) for a in q.get("answer", []) if a.get("format") == "SQL"), "")
+
+# ---------- IQ score: port of Genie Workbench iq_scan/scoring.py ----------
+_KW = re.compile(r"\b(SELECT|WHERE|JOIN|GROUP\s+BY|ORDER\s+BY|HAVING)\b", re.I)
+_ANCHORS = [re.compile(p, re.I) for p in [
+    r"\bSELECT\b[^.]*?\bFROM\b",
+    r"\bFROM\s+[`\"\w.]+\s+(?:AS\s+\w+|WHERE|JOIN|GROUP|ORDER|HAVING|LIMIT)\b",
+    r"\bJOIN\s+[`\"\w.]+\s+ON\b",
+    r"\bWHERE\s+[`\"\w.]+\s*(?:=|<>|!=|<=|>=|<|>|\bLIKE\b|\bIN\s*\()",
+    r"\bGROUP\s+BY\s+[`\"\w.]+(?:\s*,\s*[`\"\w.]+)*\s+(?:\bHAVING\b|\bORDER\s+BY\b|\bLIMIT\b)",
+    r"\bORDER\s+BY\s+[`\"\w.]+(?:\s*,\s*[`\"\w.]+)*\s+(?:\bASC\b|\bDESC\b|\bLIMIT\b)",
+    r"\bHAVING\s+(?:SUM|COUNT|AVG|MAX|MIN|STDDEV|VARIANCE)\s*\("]]
+_PROSE = re.compile(r"^\s*[-*\u2022]?\s*(?:Do\s+not|Don['\u2019]t|Never|Always|When|If|Prefer|Avoid|Combine|Link|Pair|Associate|Consider|Note)\b", re.I)
+_SIGNALS = [re.compile(p, re.I) for p in [
+    r"[`\"]?\w+[`\"]?\.[`\"]?\w+[`\"]?",
+    r"(?:=|<>|!=|<=|>=|\bLIKE\b|\bIN\s*\(|\bBETWEEN\s+\w+)",
+    r"\b(?:SUM|COUNT|AVG|MAX|MIN|STDDEV|VARIANCE)\s*\(",
+    r"\bIS\s+(?:NOT\s+)?NULL\b"]]
+
+def sql_in_prose_lines(text):
+    """Instruction lines that contain SQL structure, not just a SQL keyword (Workbench scanner v2)."""
+    out = []
+    for line in (text or "").splitlines():
+        if not line.strip():
+            continue
+        if any(p.search(line) for p in _ANCHORS):
+            out.append(line); continue
+        if _PROSE.match(line):
+            continue
+        if len({m.group(1).upper() for m in _KW.finditer(line)}) >= 2 and any(s.search(line) for s in _SIGNALS):
+            out.append(line)
+    return out
+
+def iq_score(cfg, uc=None, best_accuracy=None):
+    """12-check IQ score with Genie Workbench rules. best_accuracy: 0-1 from a completed benchmark run, or None."""
+    uc = uc if uc is not None else uc_info(cfg)
+    t, mv = _sources(cfg); n_src = len(t) + len(mv)
+    ins = cfg.get("instructions", {}); snip = ins.get("sql_snippets", {}) or {}
+    checks = []
+    def chk(n, label, ok, detail, sev=None):
+        checks.append({"n": n, "label": label, "passed": ok, "severity": sev or ("pass" if ok else "fail"), "detail": detail})
+    ucs = lambda s: uc.get(s.get("identifier", "").replace("`", ""), {})
+    chk(1, "Data sources exist", n_src > 0, f"{n_src} data source(s)")
+    if t:
+        d = sum(1 for s in t if s.get("description") or s.get("comment") or ucs(s).get("has_comment"))
+        p = d / len(t)
+        chk(2, "Table descriptions >=80%", p >= .8, f"{d}/{len(t)} ({p:.0%})", "fail" if p < .8 else ("warning" if p < 1 else "pass"))
+        tot = des = 0; syn = False
+        for s in t:
+            cc = ucs(s).get("col_comments", {})
+            for c in s.get("column_configs", []) + s.get("columns", []):
+                tot += 1; syn = syn or bool(c.get("synonyms"))
+                if c.get("description") or c.get("comment") or cc.get((c.get("column_name") or c.get("name", "")).lower()):
+                    des += 1
+        p = des / tot if tot else 0
+        sev = "fail" if p < .5 else ("warning" if p < .8 or not syn else "pass")
+        chk(3, "Column descriptions >=50%", p >= .5, f"{des}/{tot} configured columns ({p:.0%})" + ("" if syn else " | no column synonyms"), sev)
+    else:
+        chk(2, "Table descriptions >=80%", bool(mv), "metric-view-only: managed in Unity Catalog")
+        chk(3, "Column descriptions >=50%", bool(mv), "metric-view-only: managed in Unity Catalog")
+    text = "".join(_txt(x.get("content")) for x in ins.get("text_instructions", []))
+    warn = []
+    if len(text) > 2000: warn.append(f"{len(text):,} chars (> 2,000 recommended)")
+    sqlp = sql_in_prose_lines(text)
+    if sqlp: warn.append(f"{len(sqlp)} line(s) with SQL in prose")
+    ok = len(text) > 50
+    chk(4, "Text instructions >50 chars", ok, f"{len(text):,} chars" + (" | " + "; ".join(warn) if warn else ""), "warning" if ok and warn else None)
+    js = ins.get("join_specs", [])
+    chk(5, "Join specifications", bool(js), f"{len(js)} join spec(s) for {n_src} source(s)"
+        + (" | single source: N/A for recommendations" if not js and n_src == 1 else ""))
+    chk(6, "Data source count 1-12", 1 <= n_src <= 12, f"{n_src}")
+    ex = ins.get("example_question_sqls", [])
+    no_ug = sum(1 for e in ex if not e.get("usage_guidance"))
+    chk(7, "8+ example SQLs", len(ex) >= 8, f"{len(ex)}" + (f" | {no_ug} lack usage_guidance" if ex and no_ug > len(ex) / 2 else ""),
+        "warning" if 8 <= len(ex) < 10 or (ex and no_ug > len(ex) / 2 and len(ex) >= 8) else None)
+    nf, nm, ne, nfn = len(snip.get("filters", [])), len(snip.get("measures", [])), len(snip.get("expressions", [])), len(ins.get("sql_functions", []))
+    ok = bool(nf or nm or ne or nfn)
+    chk(8, "SQL snippets", ok, f"{nfn} functions, {nm} measures, {nf} filters, {ne} expressions", "warning" if ok and (not nf or not nm) else None)
+    cols = [c for s in t + mv for c in s.get("column_configs", []) + s.get("columns", [])]
+    ec = sum(1 for c in cols if c.get("enable_entity_matching"))
+    fc = sum(1 for c in cols if c.get("enable_format_assistance") or c.get("format_assistance_enabled"))
+    chk(9, "Entity/format matching", ec > 0 or fc > 0, f"{ec} entity matching, {fc} format assistance", "warning" if ec > 100 else None)
+    nb = len(cfg.get("benchmarks", {}).get("questions", []))
+    chk(10, "10+ benchmark questions", nb >= 10, f"{nb}")
+    has_run = best_accuracy is not None
+    chk(11, "Benchmark run completed", has_run, "completed run" if has_run else "no completed run")
+    chk(12, "Accuracy >=85%", has_run and best_accuracy >= .85, f"{best_accuracy:.0%}" if has_run else "n/a")
+    tier = "Trusted" if all(c["passed"] for c in checks) else ("Ready to Optimize" if all(c["passed"] for c in checks[:10]) else "Not Ready")
+    return {"score": sum(c["passed"] for c in checks), "total": 12, "tier": tier, "checks": checks}
+
+# ---------- SQL ----------
+def run_sql(warehouse_id, sql):
+    """Run SQL on the agent's warehouse; return (columns, rows). Rows stay in memory only."""
+    r = w.statement_execution.execute_statement(warehouse_id=warehouse_id, statement=sql.strip().rstrip(";"), wait_timeout="50s")
+    while r.status.state in (StatementState.PENDING, StatementState.RUNNING):
+        time.sleep(3); r = w.statement_execution.get_statement(r.statement_id)
+    if r.status.state != StatementState.SUCCEEDED:
+        raise RuntimeError(f"{r.status.state}: {(r.status.error.message if r.status.error else '')[:200]}")
+    cols = [c.name for c in (r.manifest.schema.columns or [])] if r.manifest and r.manifest.schema else []
+    return cols, list((r.result.data_array if r.result else None) or [])
+
+def explain_ok(warehouse_id, sql):
+    """(True, '') if EXPLAIN succeeds, else (False, short error). Returns no data."""
+    try:
+        run_sql(warehouse_id, "EXPLAIN " + sql.strip().rstrip(";")); return True, ""
+    except Exception as e:
+        return False, str(e)[:200]
+
+# ---------- native benchmark runs ----------
+def _val(x):
+    return str(x.value if hasattr(x, "value") else x)
+
+def recent_runs(space_id, n=10):
+    """Recent benchmark runs (including UI runs): id, status, counts, accuracy."""
+    runs = w.genie.genie_list_eval_runs(space_id, page_size=n).eval_runs or []
+    return [{"eval_run_id": r.eval_run_id, "status": _val(r.eval_run_status), "num_questions": r.num_questions,
+             "num_correct": r.num_correct, "num_needs_review": r.num_needs_review, "created": r.created_timestamp,
+             "accuracy": (r.num_correct / r.num_questions) if r.num_questions else None} for r in runs]
+
+def run_results(space_id, eval_run_id):
+    """Per-question assessment and reason codes for a run. No values."""
+    out, tok = [], None
+    while True:
+        page = w.genie.genie_list_eval_results(space_id, eval_run_id, page_size=100, page_token=tok)
+        for it in page.eval_results or []:
+            d = w.genie.genie_get_eval_result_details(space_id, eval_run_id, it.result_id)
+            out.append({"benchmark_question_id": it.benchmark_question_id, "question": it.question,
+                        "assessment": _val(d.assessment), "reasons": [_val(x) for x in (d.assessment_reasons or [])]})
+        tok = getattr(page, "next_page_token", None)
+        if not tok:
+            return out
+
+def run_benchmarks(space_id, question_ids=None, poll_s=15, timeout_s=1800):
+    """Start a native benchmark run (all questions, or question_ids) and wait. Returns counts and per-question results."""
+    rid = w.genie.genie_create_eval_run(space_id, benchmark_question_ids=question_ids).eval_run_id
+    t0 = time.time()
+    while True:
+        st = _val(w.genie.genie_get_eval_run(space_id, rid).eval_run_status)
+        if st in ("DONE", "FAILED", "CANCELLED") or time.time() - t0 > timeout_s:
+            break
+        time.sleep(poll_s)
+    res = run_results(space_id, rid)
+    good = sum(r["assessment"] == "GOOD" for r in res)
+    return {"eval_run_id": rid, "status": st, "num_questions": len(res), "num_good": good,
+            "num_needs_review": sum(r["assessment"] not in ("GOOD", "BAD") for r in res),
+            "accuracy": good / len(res) if res else None, "results": res}
+
+def stability_check(space_id, failing_qids, reps=2):
+    """Re-run failing questions reps times. FLAKY = passed on at least one re-run; STABLE_FAIL = failed every time."""
+    hist = {q: [] for q in failing_qids}
+    for _ in range(reps):
+        for r in run_benchmarks(space_id, list(failing_qids))["results"]:
+            hist.setdefault(r["benchmark_question_id"], []).append(r["assessment"])
+    return {q: ("FLAKY" if "GOOD" in h else "STABLE_FAIL") for q, h in hist.items()}
+
+# ---------- fallback: chat-mode harness ----------
+ROW_CAP = 5000
+def _norm(v):
+    if v is None:
+        return None
+    try:
+        return round(float(v), 4)
+    except (TypeError, ValueError):
+        return str(v).strip()
+
+def compare_results(exp_cols, exp_rows, got_cols, got_rows):
+    """Order-insensitive comparison of rows and columns. Returns (verdict, reason). Never returns values."""
+    ne, ng = len(exp_rows), len(got_rows)
+    if ne == 0 and ng == 0: return "PASS", "BOTH_EMPTY"
+    if ne == 0: return "EXCLUDED", "EMPTY_GOOD_SQL"
+    if ng == 0: return "FAIL", "EMPTY_RESULT"
+    if ng == ROW_CAP and ne > ROW_CAP: return "PASS", "ROW_CAP"
+    if max(ne, ng) > ROW_CAP:
+        if ne == ng and len(exp_cols) <= len(got_cols): return "PASS", "ROW_CAP_COUNT_ONLY"
+        return "FAIL", "RESULT_MISSING_ROWS" if ng < ne else "RESULT_EXTRA_ROWS"
+    if ne != ng: return "FAIL", "RESULT_MISSING_ROWS" if ng < ne else "RESULT_EXTRA_ROWS"
+    vec = lambda rows, j: tuple(sorted((_norm(r[j]) for r in rows), key=lambda x: (x is None, str(x))))
+    ev = Counter(vec(exp_rows, j) for j in range(len(exp_cols)))
+    gv = Counter(vec(got_rows, j) for j in range(len(got_cols)))
+    if not (ev - gv):
+        gmap = {}
+        for j in range(len(got_cols)): gmap.setdefault(vec(got_rows, j), []).append(j)
+        pick = [gmap[vec(exp_rows, i)].pop(0) for i in range(len(exp_cols))]
+        e_rows = Counter(tuple(_norm(r[i]) for i in range(len(exp_cols))) for r in exp_rows)
+        g_rows = Counter(tuple(_norm(r[j]) for j in pick) for r in got_rows)
+        if e_rows == g_rows:
+            return ("PASS", "EXACT") if len(got_cols) == len(exp_cols) else ("PASS_EXTRA_COLUMNS", "RESULT_EXTRA_COLUMNS")
+        return "FAIL", "VALUES_DIFFER"
+    if len(got_cols) < len(exp_cols): return "FAIL", "RESULT_MISSING_COLUMNS"
+    if ne == 1 and len(exp_cols) == 1: return "FAIL", "SINGLE_CELL_DIFFERENCE"
+    return "FAIL", "VALUES_DIFFER"
+
+def ask_agent(space_id, question):
+    """Ask one question in chat mode; return (generated_sql, columns, rows). Rows stay in memory only."""
+    m = w.genie.start_conversation_and_wait(space_id, question)
+    for a in m.attachments or []:
+        if a.query and a.query.query:
+            sr = w.genie.get_message_attachment_query_result(space_id, m.conversation_id, m.message_id, a.attachment_id).statement_response
+            cols = [c.name for c in sr.manifest.schema.columns] if sr.manifest and sr.manifest.schema else []
+            return a.query.query, cols, list((sr.result.data_array if sr.result else None) or [])
+    return None, [], []
+
+def chat_benchmarks(space_id, cfg, warehouse_id, question_ids=None, pause_s=15):
+    """Fallback when native runs aren't available: ask each benchmark in chat mode and compare in memory."""
+    out = []
+    for q in cfg.get("benchmarks", {}).get("questions", []):
+        if question_ids and q["id"] not in question_ids:
+            continue
+        base = {"benchmark_question_id": q["id"], "question": _txt(q.get("question"))}
+        sql = expected_sql(q)
+        if not sql.strip():
+            out.append({**base, "verdict": "EXCLUDED", "reason": "NO_EXPECTED_SQL"}); continue
+        try:
+            ec, er = run_sql(warehouse_id, sql)
+        except Exception:
+            out.append({**base, "verdict": "EXCLUDED", "reason": "GT_SQL_ERROR"}); continue
+        try:
+            gsql, gc, gr = ask_agent(space_id, base["question"])
+            v, rc = ("FAIL", "NO_SQL_GENERATED") if not gsql else compare_results(ec, er, gc, gr)
+        except Exception:
+            v, rc = "EXCLUDED", "GENIE_ERROR"
+        out.append({**base, "verdict": v, "reason": rc})
+        time.sleep(pause_s)
+    scored = [x for x in out if x["verdict"] != "EXCLUDED"]
+    ok = sum(x["verdict"].startswith("PASS") for x in scored)
+    return {"num_scored": len(scored), "num_excluded": len(out) - len(scored), "num_pass": ok,
+            "accuracy": ok / len(scored) if scored else None, "results": out}
+
+# ---------- change verification ----------
+def _ids(o, acc=None):
+    acc = set() if acc is None else acc
+    if isinstance(o, dict):
+        if isinstance(o.get("id"), str): acc.add(o["id"])
+        for v in o.values(): _ids(v, acc)
+    elif isinstance(o, list):
+        for v in o: _ids(v, acc)
+    return acc
+
+def verify_update(before, after, expected_counts_delta=None):
+    """Check an applied change: counts moved only as intended and no existing IDs disappeared."""
+    sb, sa = summarize(before, uc={}), summarize(after, uc={})
+    exp = expected_counts_delta or {}
+    bad = {k: (sb[k], sa[k]) for k in sb if sa[k] - sb[k] != exp.get(k, 0)}
+    lost = _ids(before) - _ids(after)
+    return {"ok": not bad and not lost, "unexpected_count_changes": bad, "lost_ids": len(lost)}
+
+print("Helper library ready. SDK:", __import__("databricks.sdk").sdk.version.__version__)
+```
 
 ## References (GCP)
 
